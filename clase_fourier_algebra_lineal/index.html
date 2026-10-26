@@ -655,11 +655,269 @@ slide('por-que', g => {
 });
 
 /* ════════════════════════════════════════════════════════════════════════════
-   9  El 1.c por el camino fácil: f₂' = −½ + f, así que la serie de f₂ sale de integrar la de f
+   Ejercicio 1.c (guía 2, P1 c), resuelto como en la clase: enunciado, (a), (b), (c) por el camino largo
+   y después (slide siguiente) por el camino fácil.
+   ════════════════════════════════════════════════════════════════════════════ */
+// f del 1.c dibujada como en el pizarrón: tramos llenos y saltos punteados
+function escalones(g, ax, tramos, o = {}) {
+  const ls = tramos.map(([a, b, y]) => new Curve(g, [[ax.X(a), ax.Y(y)], [ax.X(b), ax.Y(y)]], { color: o.color || 'x', width: o.width || 4.5 }));
+  const saltos = [];
+  for (let i = 1; i < tramos.length; i++) {
+    const x = tramos[i][0], y0 = tramos[i - 1][2], y1 = tramos[i][2];
+    if (y0 !== y1) saltos.push(new Curve(g, [[ax.X(x), ax.Y(y0)], [ax.X(x), ax.Y(y1)]], { color: o.color || 'x', width: 2.5, dash: '7 8' }));
+  }
+  return p => { ls.forEach(l => l.create(p)); saltos.forEach(s => s.create(p)); };
+}
+const TRAMOS_F = [[-PI, -PI / 2, 1], [-PI / 2, PI / 2, 0], [PI / 2, PI, 1]];
+
+slide('p1-enunciado', g => {
+  const titulo = new Txt(g, 'Ejercicio 1.c', { size: 54, x: 70, y: 80 });
+  const X = 90, sz = 34;
+  const e = [
+    new Mix(g, 'Sea $f(x): \\mathbb R \\to \\mathbb R$, $2\\pi$–periódica, definida en $(-\\pi, \\pi]$ por', { size: sz, x: X, y: 210 }),
+    new Tex(g, '\\displaystyle f(x) = \\begin{cases} 1, & -\\pi \\le x \\le -\\pi/2, \\\\ 0, & -\\pi/2 \\le x < \\pi/2, \\\\ 1, & \\pi/2 \\le x \\le \\pi, \\end{cases}', { size: 38, x: X + 120, y: 365 }),
+    new Mix(g, 'y sea', { size: sz, x: X, y: 500 }),
+    new Tex(g, '\\displaystyle f_2(x) = -\\frac{x}{2} + \\int_0^x f(t)\\,\\mathrm dt.', { size: 38, x: X + 120, y: 590 }),
+    new Mix(g, '(a)  Calcular los coeficientes de Fourier de $f(x)$.', { size: sz, x: X + 40, y: 720 }),
+    new Mix(g, '(b)  Escribir explícitamente $f_2(x)$ y graficarla.', { size: sz, x: X + 40, y: 785 }),
+    new Mix(g, '(c)  Obtener los coeficientes de Fourier de $f_2(x)$.', { size: sz, x: X + 40, y: 850 }),
+  ];
+  const ax = new Axes(g, ejePi(1080, 1800, 330, 660, [-.4, 1.4]));
+  const dib = escalones(g, ax, TRAMOS_F);
+  const lF = new Tex(g, 'f(x)', { size: 40, color: 'x', x: ax.X(PI) - 40, y: ax.Y(1) - 24 });
+  return {
+    steps: [3.6, 1.8],
+    render(t) {
+      titulo.write(P(t, 0, .9));
+      e.forEach((m, i) => m.write(P(t, .3 + .38 * i, .9)));
+      ax.create(P(t, 3.6, 1)); dib(P(t, 4, 1.2)); lF.write(P(t, 4.2, .8));
+    },
+  };
+});
+
+/* (a) a₀ = ⟨f⟩ y b_n = 0 por paridad. Slider de n: el producto f·sen(nx) es impar y su área se cancela. */
+slide('p1-a0bn', g => {
+  const titulo = new Mix(g, '1.c (a)  ·  $a_0$ y $b_n$', { size: 54, x: 70, y: 80 });
+  const F = FUN.f;
+  const axT = new Axes(g, ejePi(150, 900, 210, 440, [-.4, 1.4]));
+  const aT = new Area(g); aT.pos.style.fill = C('x');
+  const dibT = escalones(g, axT, TRAMOS_F);
+  const media = new Curve(g, [[axT.X(-PI), axT.Y(.5)], [axT.X(PI), axT.Y(.5)]], { color: 'k', width: 3, dash: '10 8' });
+  const lMedia = new Tex(g, '\\langle f\\rangle = \\tfrac12', { size: 32, color: 'k', x: axT.X(PI) + 14, y: axT.Y(.5) + 10 });
+  const lT = new Tex(g, 'f(x)', { size: 36, color: 'x', x: 170, y: 210 });
+  const axB = new Axes(g, ejePi(150, 900, 600, 860, [-1.3, 1.3]));
+  const aB = new Area(g), cS = new Curve(g, null, { color: 'h', width: 2.5, dash: '8 8' }), cB = new Curve(g, null, { color: 'fg', width: 3.5 });
+  const lB = new TexVar(g, { size: 34, x: 170, y: 598 });
+  const sl = new Deslizador(g, 170, 470, 965, [1, 2, 3, 4, 5, 6, 7, 8], () => redibujar(), { rotulo: 'el $n$ de $\\sen(nx)$', texto: n => `$n = ${n}$` });
+  const rB = new Lectura(g, '', { size: 32, x: 640, y: 975, colorNum: 'k' });
+  const X0 = 1010;
+  const r1 = new Tex(g, '\\displaystyle a_0 = \\langle f\\rangle = \\frac{1\\cdot\\frac{\\pi}{2} + 0\\cdot\\pi + 1\\cdot\\frac{\\pi}{2}}{2\\pi} = \\frac12', { size: 40, x: X0, y: 250 });
+  const r2 = new Tex(g, 'b_n = 0', { size: 46, x: X0, y: 420, color: 'k' });
+  const p1 = new Mix(g, '$\\sen(nx) = -\\sen(n(-x))$:  impar', { size: 32, x: X0 + 230, y: 392 });
+  const p2 = new Mix(g, '$f(x) = f(-x)$:  par', { size: 32, x: X0 + 230, y: 452 });
+  const r3 = new Tex(g, '\\displaystyle \\int_{-\\ell}^{\\ell} \\underbrace{\\text{par}(x)\\,\\text{impar}(x)}_{\\text{impar}\'(x)}\\,\\mathrm dx = \\int_{-\\ell}^{0} \\text{impar}\'(x)\\,\\mathrm dx + \\int_{0}^{\\ell} \\text{impar}\'(x)\\,\\mathrm dx', { size: 32, x: X0, y: 610 });
+  const r4 = new Tex(g, '\\displaystyle = -\\int_{0}^{\\ell} \\text{impar}\'(x)\\,\\mathrm dx + \\int_{0}^{\\ell} \\text{impar}\'(x)\\,\\mathrm dx = 0', { size: 32, x: X0 + 160, y: 740 });
+  const T1 = 2.6, T2 = 5.2;
+  const ley = leyendas(g, [['el área de un producto impar se cancela: a la izquierda lo mismo que a la derecha, con el otro signo', T2 + 1.6]], { size: 34, y: 1045 });
+  let tUlt = 0;
+  const yo = {
+    steps: [T1, T2 - T1, 2.8],
+    render(t) {
+      tUlt = t;
+      const n = sl.v, pB = P(t, T1, 1.2);
+      titulo.write(P(t, 0, .9));
+      axT.create(P(t, 0, 1)); dibT(P(t, .3, 1)); lT.write(P(t, .3, 1));
+      aT.set(axT, XS, F.ys).alpha(P(t, 1, .8)); media.create(P(t, 1.6, .8)); lMedia.write(P(t, 1.6, .8));
+      r1.write(P(t, .8, 1.4));
+      r2.write(P(t, T1, .8)); p1.write(P(t, T1 + .4, .9)); p2.write(P(t, T1 + .8, .9));
+      axB.create(pB);
+      const prod = XS.map((x, i) => F.ys[i] * Math.sin(n * x));
+      cS.set(XS.map(x => [axB.X(x), axB.Y(Math.sin(n * x))])).create(P(t, T1 + .3, 1));
+      cB.set(XS.map((x, i) => [axB.X(x), axB.Y(prod[i])])).create(P(t, T1 + .7, 1)); aB.set(axB, XS, prod).alpha(P(t, T1 + 1.2, .8));
+      lB.set(`f(x)\\,\\sen(${n > 1 ? n : ''}x)`).write(P(t, T1 + .7, 1));
+      sl.alpha(P(t, T1 + 1.2, .6));
+      rB.formula(`\\int_{-\\pi}^{\\pi} f(x)\\,\\sen(${n > 1 ? n : ''}x)\\,\\mathrm dx =`).set(integral(x => F.h(x) * Math.sin(n * x)), 3).write(P(t, T1 + 1.4, .8));
+      r3.write(P(t, T2, 1.4)); r4.write(P(t, T2 + 1, 1.2)); ley(t);
+    },
+  };
+  const redibujar = () => yo.render(tUlt);
+  return yo;
+});
+
+/* (a) a_n: la integral queda sólo en [π/2, π]; sen(nπ/2) vale 1, 0, −1; con n = 2m − 1 sale la serie. */
+slide('p1-an', g => {
+  const titulo = new Mix(g, '1.c (a)  ·  $a_n$', { size: 54, x: 70, y: 80 });
+  const F = FUN.f;
+  let n = 1;
+  const ax = new Axes(g, ejePi(150, 900, 210, 470, [-1.3, 1.3]));
+  const area = new Area(g), cC = new Curve(g, null, { color: 'h', width: 4 }), dib = escalones(g, ax, TRAMOS_F, { width: 3.5 });
+  const lF = new Tex(g, 'f(x)', { size: 34, color: 'x', x: 170, y: 208 }), lC = new TexVar(g, { size: 34, color: 'h', x: 270, y: 208 });
+  const rA = new Lectura(g, '', { size: 32, x: 150, y: 560, colorNum: 'k' });
+  // espectro de los a_n (se toca una barra o se usa el slider)
+  const SX0 = 190, SDX = 54, BASE = 790, ALTO = 95, NV = 12;
+  const gE = E('g', {}, g);
+  new Curve(gE, [[SX0 - 22, BASE], [SX0 + NV * SDX + 22, BASE]], { color: 'ax', width: 2.5 });
+  new Tex(gE, 'a_n', { size: 34, color: 'k', x: SX0 - 40, y: BASE + 12, anchor: 'end' });
+  for (let m = 0; m <= NV; m++) new Tex(gE, String(m), { size: 22, x: SX0 + m * SDX, y: BASE + ALTO + 38, anchor: 'middle', color: 'dim' });
+  const todos = new Stems(gE, BASE, { color: 'k', r: 7, width: 4 }), elegido = new Stems(gE, BASE, { color: 'h', r: 9, width: 6 });
+  for (let m = 1; m <= NV; m++) {
+    const z = E('rect', { x: SX0 + m * SDX - SDX / 2, y: BASE - ALTO - 15, width: SDX, height: 2 * ALTO + 30, fill: 'transparent' }, gE);
+    clickeable(z, () => { n = m; redibujar(); });
+  }
+  const pis = pista(g, 'tocá una barra para elegir $n$', SX0 + NV * SDX / 2, 975);
+  const X0 = 1000, sz = 33;
+  const r1 = new Tex(g, '\\displaystyle a_n = \\frac{1}{\\pi}\\int_{-\\pi}^{\\pi} f(x)\\cos(nx)\\,\\mathrm dx = \\frac{2}{\\pi}\\int_0^{\\pi} f(x)\\cos(nx)\\,\\mathrm dx', { size: sz, x: X0, y: 215 });
+  const r2 = new Tex(g, '\\displaystyle = \\frac{2}{\\pi}\\int_{\\pi/2}^{\\pi} 1\\cdot\\cos(nx)\\,\\mathrm dx = \\frac{2}{\\pi}\\,\\frac{\\sen(nx)}{n}\\Big|_{\\pi/2}^{\\pi}', { size: sz, x: X0 + 40, y: 335 });
+  const r3 = new Tex(g, '\\displaystyle = \\frac{2}{n\\pi}\\Big[\\cancelto{0}{\\sen(n\\pi)} - \\sen(n\\pi/2)\\Big] = -\\frac{2}{n\\pi}\\,\\sen(n\\pi/2)', { size: sz, x: X0 + 40, y: 455 });
+  const r4 = new Tex(g, '\\displaystyle \\sen(n\\pi/2) = \\begin{cases} \\ \\ 1 & n = 1, 5, 9, \\dots \\\\ \\ \\ 0 & n = 2, 4, 6, 8, \\dots \\\\ -1 & n = 3, 7, 11, \\dots \\end{cases}', { size: sz, x: X0 + 40, y: 600 });
+  const r5 = new Tex(g, '\\displaystyle \\overset{n = 2m-1}{=}\\ \\ \\frac{-2(-1)^{m-1}}{(2m-1)\\pi} = \\frac{2(-1)^m}{(2m-1)\\pi}', { size: sz, x: X0 + 40, y: 740 });
+  const r6 = new Tex(g, '\\displaystyle \\boxed{\\ f(x) = \\frac12 + \\sum_{m=1}^{\\infty} \\frac{2(-1)^m}{(2m-1)\\pi}\\,\\cos((2m-1)x)\\ }', { size: 36, x: X0, y: 890, color: 'k' });
+  const T1 = 2.4, T2 = 4.8, T3 = 7.4;
+  let tUlt = 0;
+  const yo = {
+    steps: [T1, T2 - T1, T3 - T2, 1.8],
+    render(t) {
+      tUlt = t;
+      const pA = P(t, T1, 1);
+      titulo.write(P(t, 0, .9));
+      ax.create(P(t, 0, 1)); dib(P(t, .3, 1)); lF.write(P(t, .3, 1));
+      const cn = x => Math.cos(n * x), tex = `\\cos(${n > 1 ? n : ''}x)`;
+      cC.set(XS.map(x => [ax.X(x), ax.Y(cn(x))])).create(P(t, .6, 1)); lC.set(tex).write(P(t, .6, 1));
+      r1.write(P(t, .6, 1.4));
+      const xa = XS.filter(x => x >= PI / 2);
+      area.set(ax, xa, xa.map(cn)).alpha(pA);
+      r2.write(P(t, T1, 1.2)); r3.write(P(t, T1 + 1, 1.2));
+      const s = Math.round(Math.sin(n * PI / 2));
+      rA.formula(`a_{${n}} = -\\frac{2}{${n}\\pi}\\,\\sen(${n}\\pi/2) = -\\frac{2}{${n}\\pi}\\cdot(${s}) =`).set(F.a[n], 3).write(P(t, T1 + 1.4, .9));
+      r4.write(P(t, T2, 1.2)); r5.write(P(t, T2 + 1, 1.2));
+      gE.style.opacity = P(t, T2 + .4, .8); gE.style.visibility = t > T2 + .4 ? 'visible' : 'hidden';
+      const M = Math.max(...F.a.slice(0, NV + 1).map(Math.abs));
+      todos.set(F.a.slice(0, NV + 1).map((v, m) => [SX0 + m * SDX, BASE - ALTO * v / M]), P(t, T2 + .4, 1.4));
+      elegido.set([[SX0 + n * SDX, BASE - ALTO * F.a[n] / M]], P(t, T2 + 1.4, .6));
+      pis.write(P(t, T2 + 1.6, .8));
+      r6.write(P(t, T3, 1.2));
+    },
+  };
+  const redibujar = () => yo.render(tUlt);
+  return yo;
+});
+
+/* (b) f₂ explícita: ∫₀ˣ f por tramos, más −x/2. Se arrastra x. */
+slide('p1-b', g => {
+  const titulo = new Mix(g, '1.c (b)  ·  $f_2$ explícita', { size: 54, x: 70, y: 80 });
+  const F = FUN.f, F2 = FUN.f2;
+  const per = h => x => h(((x + PI) % (2 * PI) + 2 * PI) % (2 * PI) - PI);
+  const fP = per(F.h), f2P = per(F2.h), I = x => F2.h(x) + x / 2;   // ∫₀ˣ f = f₂ + x/2 (en [−π, π])
+  const eje = (y0, y1, yr, o = {}) => ({ x0: 140, x1: 960, y0, y1, xr: [-4.4, 4.4], yr, ejeY: 0, base: 0, xticks: TICKS_PI, xlabel: 'x', ...o });
+  const axT = new Axes(g, eje(200, 410, [-.4, 1.4], { xlabel: null }));
+  const XL = linspace(-4.4, 4.4, 1400), dentro = x => Math.abs(x) <= PI;
+  const area = new Area(g); area.pos.style.fill = C('k');
+  const dibT = escalones(g, axT, TRAMOS_F);
+  const extT = new Curve(g, null, { color: 'x', width: 2.5, dash: '3 9' });
+  const lT = new Tex(g, 'f(x)', { size: 34, color: 'x', x: 160, y: 200 });
+  const axB = new Axes(g, eje(520, 880, [-1.75, 1.75]));
+  const cI = new Curve(g, linspace(-PI, PI, 400).map(x => [axB.X(x), axB.Y(I(x))]), { color: 'k', width: 3.5, dash: '12 8' });
+  const cM = new Curve(g, [[axB.X(-PI), axB.Y(PI / 2)], [axB.X(PI), axB.Y(-PI / 2)]], { color: 'dim', width: 3, dash: '4 8' });
+  const cF2 = new Curve(g, linspace(-PI, PI, 400).map(x => [axB.X(x), axB.Y(F2.h(x))]), { color: 'x', width: 5 });
+  const extB = new Curve(g, null, { color: 'x', width: 3, dash: '3 9' });
+  const lI = new Tex(g, '\\displaystyle \\int_0^x f', { size: 32, color: 'k', x: 160, y: 512 }), lM = new Tex(g, '\\displaystyle -\\frac{x}{2}', { size: 32, color: 'dim', x: 300, y: 512 });
+  const lF2 = new Tex(g, 'f_2(x)', { size: 34, color: 'x', x: 420, y: 512 });
+  let xc = 2.3;
+  const guia = new Curve(g, null, { color: 'h', width: 2.5, dash: '6 8' });
+  const pts = [0, 1, 2].map(() => E('circle', { r: 8 }, g));
+  pts[0].style.fill = C('k'); pts[1].style.fill = C('dim'); pts[2].style.fill = C('x');
+  const mX = new Manija(g, 'h', q => { xc = clamp(axB.xr[0] + (q.x - axB.x0) / (axB.x1 - axB.x0) * (axB.xr[1] - axB.xr[0]), -PI, PI); redibujar(); });
+  const rX = new TexVar(g, { mix: true, size: 30, x: 140, y: 975 });
+  const X0 = 1080;
+  const r1 = new Tex(g, '\\displaystyle f_2(x) = -\\frac{x}{2} + \\int_0^x f(t)\\,\\mathrm dt', { size: 38, x: X0, y: 230 });
+  const r2 = new Tex(g, '\\displaystyle \\int_0^x f(t)\\,\\mathrm dt = \\begin{cases} 0 & \\text{si } x \\in [-\\pi/2,\\ \\pi/2] \\\\ x - \\pi/2 & \\text{si } x \\in [\\pi/2,\\ \\pi] \\\\ x + \\pi/2 & \\text{si } x \\in [-\\pi,\\ -\\pi/2] \\end{cases}', { size: 34, x: X0, y: 430, color: 'k' });
+  const r3 = new Tex(g, '\\displaystyle f_2(x) = \\begin{cases} (x + \\pi)/2 & \\text{si } x \\in [-\\pi,\\ -\\pi/2] \\\\ -x/2 & \\text{si } x \\in [-\\pi/2,\\ \\pi/2] \\\\ (x - \\pi)/2 & \\text{si } x \\in [\\pi/2,\\ \\pi] \\end{cases}', { size: 34, x: X0, y: 700, color: 'x' });
+  const T1 = 2.4, T2 = 4.8, T3 = 7.2;
+  const ley = leyendas(g, [['$f_2$ es continua y $2\\pi$–periódica: una onda triangular', T3 + .3]], { size: 36, y: 1045 });
+  let tUlt = 0;
+  const yo = {
+    steps: [T1, T2 - T1, T3 - T2, 1.8],
+    render(t) {
+      tUlt = t;
+      const pI = P(t, T1, 1.2), pF2 = P(t, T2, 1.2), pExt = P(t, T3, 1);
+      titulo.write(P(t, 0, .9)); r1.write(P(t, .3, 1.2));
+      axT.create(P(t, 0, 1)); dibT(P(t, .3, 1)); lT.write(P(t, .3, 1));
+      extT.set(XL.filter(x => !dentro(x) && x < 0).map(x => [axT.X(x), axT.Y(fP(x))])).create(pExt);
+      const xa = [0, ...XS.filter(x => x * (xc - x) > 0), xc].sort((a, b) => a - b);
+      area.set(axT, xa, xa.map(F.h)).alpha(P(t, .9, .8));
+      axB.create(pI);
+      cI.create(pI); lI.write(pI); r2.write(P(t, T1 + .3, 1.4));
+      cM.create(pF2); lM.write(pF2); cF2.create(P(t, T2 + .5, 1.2)); lF2.write(P(t, T2 + .5, 1)); r3.write(P(t, T2 + .3, 1.4));
+      extB.set([...XL.filter(x => x < -PI), NaN, ...XL.filter(x => x > PI)].map(x => [axB.X(x), axB.Y(f2P(x))]).filter(p => !isNaN(p[0]))).create(pExt);
+      // el cursor
+      const yI = I(xc), yM = -xc / 2, y2 = F2.h(xc);
+      [[yI, pI], [yM, pF2], [y2, P(t, T2 + .5, 1)]].forEach(([y, p], i) => { pts[i].setAttribute('cx', axB.X(xc)); pts[i].setAttribute('cy', axB.Y(y)); pts[i].style.opacity = p; });
+      guia.set([[axT.X(xc), axT.y0], t >= T1 ? [axB.X(xc), axB.Y(t >= T2 ? y2 : yI)] : [axT.X(xc), axT.yb]]).create(P(t, .9, .8));
+      mX.at(axB.X(xc), axB.Y(t >= T2 ? y2 : yI)).alpha(t >= T1 + .8 ? 1 : 0);
+      const partes = [`$x$ = ${num(xc)}`, `$\\int_0^x f$ = ${num(yI)}`];
+      if (t >= T2) partes.push(`$f_2(x)$ = ${num(y2)}`);
+      rX.set(partes.join('    ·    ')).write(P(t, T1 + .8, .8));
+      ley(t);
+    },
+  };
+  const redibujar = () => yo.render(tUlt);
+  return yo;
+});
+
+/* (c) los coeficientes de f₂ por el camino largo: a₀ = aₙ = 0 por paridad, y bₙ por partes… se hace largo. */
+slide('p1-c-largo', g => {
+  const titulo = new Mix(g, '1.c (c)  ·  los coeficientes de $f_2$', { size: 54, x: 70, y: 80 });
+  const F2 = FUN.f2;
+  const ax = new Axes(g, ejePi(150, 900, 220, 470, [-1.3, 1.3]));
+  const cF = new Curve(g, XS.map((x, i) => [ax.X(x), ax.Y(F2.ys[i] / F2.max)]), { color: 'x', width: 4.5 });
+  const cS = new Curve(g, null, { color: 'h', width: 2.5, dash: '8 8' });
+  const lF = new Tex(g, 'f_2(x)', { size: 34, color: 'x', x: 170, y: 218 }), lS = new TexVar(g, { size: 34, color: 'h', x: 300, y: 218 });
+  const ax2 = new Axes(g, ejePi(150, 900, 600, 850, [-1.3, 1.3]));
+  const area = new Area(g), cP = new Curve(g, null, { color: 'fg', width: 3.5 });
+  const lP = new TexVar(g, { size: 32, x: 170, y: 598 });
+  const sl = new Deslizador(g, 170, 470, 965, [1, 2, 3, 4, 5, 6, 7, 8], () => redibujar(), { rotulo: 'el $n$ de $\\sen(nx)$', texto: n => `$n = ${n}$` });
+  const rB = new Lectura(g, '', { size: 32, x: 640, y: 975, colorNum: 'k' });
+  const X0 = 1000, sz = 32;
+  const r1 = new Tex(g, 'a_0 = 0 = \\langle f_2\\rangle', { size: sz, x: X0, y: 210 });
+  const r2 = new Tex(g, '\\displaystyle a_n = 0 = \\int_{-\\pi}^{\\pi} \\text{impar}\\ \\mathrm dx', { size: sz, x: X0, y: 290 });
+  const r3 = new Tex(g, '\\displaystyle b_n = \\frac{1}{\\pi}\\int_{-\\pi}^{\\pi} f_2(x)\\,\\sen(nx)\\,\\mathrm dx = \\frac{2}{\\pi}\\int_0^{\\pi} f_2(x)\\,\\sen(nx)\\,\\mathrm dx', { size: sz, x: X0, y: 410 });
+  const r4 = new Tex(g, '\\displaystyle = \\frac{2}{\\pi}\\Big[\\underbrace{\\int_0^{\\pi/2} \\frac{-x}{2}\\,\\sen(nx)\\,\\mathrm dx}_{\\text{partes}} + \\int_{\\pi/2}^{\\pi} \\frac{x - \\pi}{2}\\,\\sen(nx)\\,\\mathrm dx\\Big]', { size: sz, x: X0 + 40, y: 525 });
+  const r5 = new Tex(g, 'u = -\\tfrac{x}{2},\\quad \\mathrm dv = \\sen(nx)\\,\\mathrm dx,\\quad \\mathrm du = -\\tfrac12\\,\\mathrm dx,\\quad v = -\\tfrac{\\cos(nx)}{n}', { size: 30, x: X0 + 80, y: 670, color: 'dim' });
+  const r6 = new Tex(g, '\\displaystyle \\int_0^{\\pi/2} \\frac{-x}{2}\\,\\sen(nx)\\,\\mathrm dx = \\frac{x\\cos(nx)}{2n}\\Big|_0^{\\pi/2} - \\int_0^{\\pi/2} \\frac{\\cos(nx)}{2n}\\,\\mathrm dx = \\ \\dots', { size: 29, x: X0 + 20, y: 780 });
+  const largo = new Mix(g, '…y todavía falta la otra integral: se hace largo', { size: 34, x: X0 + 40, y: 880, italic: true, color: 'ruido' });
+  const T1 = 2.4, T2 = 4.8, T3 = 7.4;
+  let tUlt = 0;
+  const yo = {
+    steps: [T1, T2 - T1, T3 - T2, 1.6],
+    render(t) {
+      tUlt = t;
+      const n = sl.v, sn = x => Math.sin(n * x), tex = `\\sen(${n > 1 ? n : ''}x)`;
+      titulo.write(P(t, 0, .9));
+      ax.create(P(t, 0, 1)); cF.create(P(t, .3, 1)); lF.write(P(t, .3, 1));
+      r1.write(P(t, .6, 1)); r2.write(P(t, 1.2, 1));
+      const pB = P(t, T1, 1);
+      cS.set(XS.map(x => [ax.X(x), ax.Y(sn(x))])).create(pB); lS.set(tex).write(pB);
+      ax2.create(pB);
+      const prod = XS.map((x, i) => F2.ys[i] / F2.max * sn(x));
+      cP.set(XS.map((x, i) => [ax2.X(x), ax2.Y(prod[i])])).create(P(t, T1 + .4, 1)); area.set(ax2, XS, prod).alpha(P(t, T1 + .9, .8));
+      lP.set(`f_2(x)\\,${tex}`).write(P(t, T1 + .4, 1));
+      sl.alpha(P(t, T1 + 1, .6));
+      rB.formula(`b_{${n}} = \\frac{1}{\\pi}\\int_{-\\pi}^{\\pi} f_2(x)\\,${tex}\\,\\mathrm dx =`).set(F2.b[n], 3).write(P(t, T1 + 1.2, .8));
+      r3.write(P(t, T1 + .2, 1.4));
+      r4.write(P(t, T2, 1.4)); r5.write(P(t, T2 + 1.1, 1)); r6.write(P(t, T2 + 1.6, 1.2));
+      largo.write(P(t, T3, 1));
+    },
+  };
+  const redibujar = () => yo.render(tUlt);
+  return yo;
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   1.c (c) por el camino fácil: f₂' = −½ + f, así que la serie de f₂ sale de integrar la de f
       término a término. Se arrastra x (f₂(x) = área de f − ½ entre 0 y x) y se elige cuántos términos.
    ════════════════════════════════════════════════════════════════════════════ */
 slide('ej1c', g => {
-  const titulo = new Txt(g, '1.c  ·  ¿Y si nos ahorramos las cuentas?', { size: 54, x: 70, y: 80 });
+  const titulo = new Txt(g, '1.c (c)  ·  ¿y si nos ahorramos las cuentas?', { size: 54, x: 70, y: 80 });
   const F = FUN.f, F2 = FUN.f2;
   const axT = new Axes(g, ejePi(170, 1010, 200, 450, [-.45, 1.4], { xlabel: null }));
   const axB = new Axes(g, ejePi(170, 1010, 590, 860, [-1.05, 1.05]));
@@ -680,16 +938,16 @@ slide('ej1c', g => {
   const rX = new Lectura(g, 'f_2(x) = \\textstyle\\int_0^x \\big(f - \\tfrac12\\big)\\,\\mathrm dt =', { size: 32, x: 830, y: 968, colorNum: 'h' });
 
   // derecha: las cuentas
-  const X0 = 1110, sz = 32;
+  const X0 = 1110, sz = 30, D = '\\displaystyle ';
   const de = new Mix(g, 'del inciso (a):', { size: 26, x: X0, y: 175, italic: true, color: 'dim' });
-  const r0 = new Tex(g, 'f(x) = \\tfrac12 + \\sum_{m\\ge1} \\frac{2(-1)^m}{(2m-1)\\pi}\\,\\cos((2m-1)x)', { size: sz, x: X0, y: 240 });
-  const r1 = new Tex(g, 'f_2(x) = -\\frac{x}{2} + \\int_0^x f(t)\\,\\mathrm dt', { size: sz, x: X0, y: 340 });
-  const r2 = new Tex(g, '\\Rightarrow\\ \\ f_2\'(x) = -\\tfrac12 + f(x)', { size: sz, x: X0, y: 420 });
-  const r3 = new Tex(g, 'f_2\'(x) = \\sum_{m\\ge1} \\frac{2(-1)^m}{(2m-1)\\pi}\\,\\cos((2m-1)x)', { size: sz, x: X0, y: 530 });
-  const r3n = new Mix(g, '(el $\\tfrac12$ se cancela)', { size: 24, x: X0 + 700, y: 572, italic: true, color: 'dim', anchor: 'end' });
-  const r4 = new Tex(g, '\\Rightarrow\\ \\ f_2(x) = \\int_0^x f_2\'(t)\\,\\mathrm dt', { size: sz, x: X0, y: 650 });
-  const r5 = new Tex(g, '= \\sum_{m\\ge1} \\frac{2(-1)^m}{(2m-1)^2\\,\\pi}\\,\\sen((2m-1)x)', { size: sz, x: X0 + 40, y: 750 });
-  const r6 = new Tex(g, '\\boxed{\\ b_{2m-1} = \\frac{2(-1)^m}{(2m-1)^2\\,\\pi}\\ }', { size: 36, x: X0 + 40, y: 870, color: 'k' });
+  const r0 = new Tex(g, D + 'f(x) = \\tfrac12 + \\sum_{m\\ge1} \\frac{2(-1)^m}{(2m-1)\\pi}\\,\\cos((2m-1)x)', { size: sz, x: X0, y: 235 });
+  const r1 = new Tex(g, D + 'f_2(x) = -\\frac{x}{2} + \\int_0^x f(t)\\,\\mathrm dt', { size: sz, x: X0, y: 345 });
+  const r2 = new Tex(g, '\\Rightarrow\\ \\ f_2\'(x) = -\\tfrac12 + f(x)', { size: sz, x: X0, y: 430 });
+  const r3 = new Tex(g, D + 'f_2\'(x) = \\sum_{m\\ge1} \\frac{2(-1)^m}{(2m-1)\\pi}\\,\\cos((2m-1)x)', { size: sz, x: X0, y: 545 });
+  const r3n = new Mix(g, '(el $\\tfrac12$ se cancela)', { size: 24, x: X0 + 700, y: 600, italic: true, color: 'dim', anchor: 'end' });
+  const r4 = new Tex(g, D + '\\Rightarrow\\ \\ f_2(x) = \\int_0^x f_2\'(t)\\,\\mathrm dt', { size: sz, x: X0, y: 665 });
+  const r5 = new Tex(g, D + '= \\sum_{m\\ge1} \\frac{2(-1)^m}{(2m-1)^2\\,\\pi}\\,\\sen((2m-1)x)', { size: sz, x: X0 + 40, y: 775 });
+  const r6 = new Tex(g, '\\boxed{\\ b_{2m-1} = \\frac{2(-1)^m}{(2m-1)^2\\,\\pi}\\ }', { size: 34, x: X0 + 40, y: 890, color: 'k' });
   const sl = new Deslizador(g, 200, 620, 960, Array.from({ length: 20 }, (_, i) => i + 1), () => redibujar(), { inicial: 2, rotulo: 'términos de cada serie', texto: M => `$M = ${M}$` });
   const T1 = 2.4, T2 = T1 + 3, T3 = T2 + 2.8;
   const ley = leyendas(g, [['integrar divide cada coeficiente por $2m-1$: la serie de $f_2$ converge mucho más rápido', T3 + .3]], { size: 36, y: 1045 });
@@ -729,10 +987,224 @@ slide('ej1c', g => {
   return yo;
 });
 
+/* ════════════════════════════════════════════════════════════════════════════
+   Ejercicio 5 (guía 2, P5): oscilador forzado con forzante cuadrado, resuelto como en la clase.
+   Unidades: ω₀ = 1, F₀ = 1 (y Ω = 1 en las slides del (a), así T = 2π).
+   ════════════════════════════════════════════════════════════════════════════ */
+const cuadrada = (t, T = 2 * PI) => (((t % T) + T) % T) < T / 2 ? 1 : -1;
+const resp = (w, G) => ({ A: 1 / Math.hypot(1 - w * w, 2 * G * w), fi: Math.atan2(2 * G * w, 1 - w * w) });   // ω₀ = 1, φ ∈ [0, π]
+const TICKS_T = [[-PI, '-\\tfrac{T}{2}'], [PI, '\\tfrac{T}{2}'], [2 * PI, 'T']];
+// los rótulos del eje t caen justo en los saltos de la cuadrada: se corren a la derecha
+function correrTicks(ax, dx = 22) { const i0 = ax.xlabel ? 1 : 0; ax.extra.slice(i0, i0 + (ax.xticks || []).length).forEach(l => l.at(l.x + dx, l.y)); }
+
+slide('p5-enunciado', g => {
+  const titulo = new Txt(g, 'Ejercicio 5  ·  oscilador forzado', { size: 54, x: 70, y: 80 });
+  const X = 90, sz = 32;
+  const e = [
+    new Mix(g, 'Considere', { size: sz, x: X, y: 200 }),
+    new Tex(g, '\\ddot x + 2\\Gamma\\dot x + \\omega_0^2 x = f(t),', { size: 38, x: X + 120, y: 275 }),
+    new Mix(g, 'con forzante cuadrado periódico', { size: sz, x: X, y: 360 }),
+    new Tex(g, '\\displaystyle f(t) = \\begin{cases} F_0, & 0 \\le t < T/2, \\\\ -F_0, & T/2 \\le t < T, \\end{cases} \\qquad T = \\frac{2\\pi}{\\Omega}.', { size: 36, x: X + 120, y: 465 }),
+    new Mix(g, '(a)  Mostrar que', { size: sz, x: X + 40, y: 590 }),
+    new Tex(g, '\\displaystyle f(t) = \\sum_{n=1}^{\\infty} \\frac{4F_0}{(2n-1)\\pi}\\,\\sen((2n-1)\\Omega t).', { size: 36, x: X + 160, y: 680 }),
+    new Mix(g, '(b)  Recordar la solución estacionaria para un forzante armónico.', { size: sz, x: X + 40, y: 790 }),
+    new Mix(g, '(c)  Usar superposición para escribir la solución estacionaria completa.', { size: sz, x: X + 40, y: 855 }),
+  ];
+  const ax = new Axes(g, { x0: 1150, x1: 1820, y0: 230, y1: 500, xr: [-4.4, 9.7], yr: [-1.5, 1.5], ejeY: 0, base: 0, xticks: TICKS_T, xlabel: 't' });
+  correrTicks(ax);
+  const lF0 = new Tex(g, 'F_0', { size: 30, color: 'x', x: ax.X(PI / 2), y: ax.Y(1) - 14, anchor: 'middle' }), lF0m = new Tex(g, '-F_0', { size: 30, color: 'x', x: ax.X(3 * PI / 2), y: ax.Y(-1) + 40, anchor: 'middle' });
+  const dib = escalones(g, ax, [[-4.4, -PI, 1], [-PI, 0, -1], [0, PI, 1], [PI, 2 * PI, -1], [2 * PI, 9.7, 1]]);
+  const ventana = E('rect', { x: ax.X(-PI), y: ax.y0 - 10, width: ax.X(PI) - ax.X(-PI), height: ax.y1 - ax.y0 + 20 }, g);
+  Object.assign(ventana.style, { fill: C('h'), fillOpacity: .1 }); g.insertBefore(ventana, ax.g);
+  const nota = new Mix(g, 'para hacer más rápido las cuentas: $[-T/2,\\ T/2]$', { size: 28, x: 1485, y: 590, anchor: 'middle', italic: true, color: 'h' });
+  const r1 = new Tex(g, 'a_0 = 0 = \\langle f\\rangle', { size: 36, x: 1180, y: 700 });
+  const r2 = new Tex(g, '\\displaystyle a_n = 0 = \\frac{2}{T}\\int_{-T/2}^{T/2} \\text{impar}\\ \\mathrm dt', { size: 36, x: 1180, y: 810 });
+  const T1 = 3.6, T2 = 5.4;
+  return {
+    steps: [T1, T2 - T1, 2.2],
+    render(t) {
+      titulo.write(P(t, 0, .9));
+      e.forEach((m, i) => m.write(P(t, .3 + .38 * i, .9)));
+      ax.create(P(t, T1, 1)); dib(P(t, T1 + .3, 1.2)); lF0.write(P(t, T1 + .6, .8)); lF0m.write(P(t, T1 + .6, .8));
+      ventana.style.opacity = P(t, T2, .8); nota.write(P(t, T2 + .2, .9));
+      r1.write(P(t, T2 + .6, 1)); r2.write(P(t, T2 + 1.1, 1.1));
+    },
+  };
+});
+
+/* (a) los b_n paso a paso. Slider de n: el área de f·sen(nΩt) en [−T/2, T/2]; slider de M: la suma parcial. */
+slide('p5-bn', g => {
+  const titulo = new Mix(g, 'P5 (a)  ·  los $b_n$', { size: 54, x: 70, y: 80 });
+  const ax = new Axes(g, { x0: 150, x1: 900, y0: 200, y1: 420, xr: [-PI, PI], yr: [-1.4, 1.4], ejeY: 0, base: 0, xticks: TICKS_T.slice(0, 2), xlabel: 't' });
+  const area = new Area(g), cS = new Curve(g, null, { color: 'h', width: 3, dash: '8 8' });
+  const dib = escalones(g, ax, [[-PI, 0, -1], [0, PI, 1]]);
+  const lF = new Tex(g, 'f(t)', { size: 34, color: 'x', x: 170, y: 198 }), lS = new TexVar(g, { size: 34, color: 'h', x: 270, y: 198 });
+  const slN = new Deslizador(g, 170, 470, 500, [1, 2, 3, 4, 5, 6, 7, 8], () => redibujar(), { rotulo: 'el $n$ de $\\sen(n\\Omega t)$', texto: n => `$n = ${n}$` });
+  const rB = new Lectura(g, '', { size: 32, x: 640, y: 510, colorNum: 'k' });
+  const ax2 = new Axes(g, { x0: 150, x1: 900, y0: 620, y1: 870, xr: [-PI, 3 * PI], yr: [-1.5, 1.5], ejeY: 0, base: 0, xticks: TICKS_T, xlabel: 't' });
+  correrTicks(ax2);
+  const dib2 = escalones(g, ax2, [[-PI, 0, -1], [0, PI, 1], [PI, 2 * PI, -1], [2 * PI, 3 * PI, 1]], { width: 3 });
+  const cSM = new Curve(g, null, { color: 'k', width: 4 });
+  const lSM = new TexVar(g, { size: 32, color: 'k', x: 170, y: 618 });
+  const slM = new Deslizador(g, 170, 470, 965, Array.from({ length: 25 }, (_, i) => i + 1), () => redibujar(), { inicial: 2, rotulo: 'términos', texto: M => `$M = ${M}$` });
+  const X0 = 1000, sz = 32;
+  const r1 = new Tex(g, '\\displaystyle b_n = \\frac{2}{T}\\int_{-T/2}^{T/2} f(t)\\,\\sen(n\\Omega t)\\,\\mathrm dt = \\frac{4}{T}\\int_0^{T/2} F_0\\,\\sen(n\\Omega t)\\,\\mathrm dt', { size: sz, x: X0, y: 215 });
+  const r2 = new Tex(g, '\\displaystyle = -\\frac{4F_0}{T}\\,\\frac{\\cos(n\\Omega t)}{n\\Omega}\\Big|_0^{T/2} = -\\frac{4F_0}{n\\Omega T}\\Big[\\cos\\big(n\\Omega\\tfrac{T}{2}\\big) - 1\\Big]', { size: sz, x: X0 + 40, y: 335 });
+  const r2n = new Mix(g, '$n\\Omega\\,\\frac{T}{2} = n\\pi$, porque $\\Omega T = 2\\pi$', { size: 28, x: X0 + 80, y: 420, italic: true, color: 'dim' });
+  const r3 = new Tex(g, '\\displaystyle \\cos(n\\pi) - 1 = \\begin{cases} -2 & \\text{si } n = 1, 3, 5, \\dots \\\\ \\ \\ 0 & \\text{si } n = 2, 4, 6, \\dots \\end{cases}', { size: sz, x: X0 + 40, y: 540 });
+  const r4 = new Tex(g, '\\displaystyle \\Rightarrow\\ \\ b_n = \\begin{cases} 0 & \\text{si } n = 2m \\\\ \\dfrac{4F_0}{(2m-1)\\pi} & \\text{si } n = 2m-1 \\end{cases}', { size: sz, x: X0 + 40, y: 690 });
+  const r5 = new Tex(g, '\\displaystyle \\boxed{\\ f(t) = \\sum_{m=1}^{\\infty} \\frac{4F_0}{(2m-1)\\pi}\\,\\sen((2m-1)\\Omega t)\\ }', { size: 36, x: X0, y: 870, color: 'k' });
+  const XT = linspace(-PI, 3 * PI, 1200);
+  const T1 = 2.4, T2 = 4.8, T3 = 7.2;
+  let tUlt = 0;
+  const yo = {
+    steps: [T1, T2 - T1, T3 - T2, 2.2],
+    render(t) {
+      tUlt = t;
+      const n = slN.v, M = slM.v, tex = `\\sen(${n > 1 ? n : ''}\\Omega t)`;
+      titulo.write(P(t, 0, .9));
+      ax.create(P(t, 0, 1)); dib(P(t, .3, 1)); lF.write(P(t, .3, 1)); r1.write(P(t, .5, 1.4));
+      const pS = P(t, T1, 1);
+      cS.set(XS.map(x => [ax.X(x), ax.Y(Math.sin(n * x))])).create(pS); lS.set(tex).write(pS);
+      area.set(ax, XS, XS.map(x => cuadrada(x) * Math.sin(n * x))).alpha(P(t, T1 + .5, .8));
+      slN.alpha(P(t, T1 + .5, .6));
+      const bn = n % 2 ? 4 / (n * PI) : 0;
+      rB.formula(`b_{${n}} / F_0 =`).set(bn, 3).write(P(t, T1 + .7, .8));
+      r2.write(P(t, T1 + .2, 1.4)); r2n.write(P(t, T1 + 1.2, .9));
+      r3.write(P(t, T2, 1.2)); r4.write(P(t, T2 + 1, 1.2));
+      const p4 = P(t, .4, 1);
+      ax2.create(p4); dib2(p4); r5.write(P(t, T3 + .2, 1.2)); slM.alpha(P(t, .8, .6));
+      const SM = XT.map(x => { let s = 0; for (let m = 1; m <= M; m++) s += 4 / ((2 * m - 1) * PI) * Math.sin((2 * m - 1) * x); return s; });
+      cSM.set(XT.map((x, i) => [ax2.X(x), ax2.Y(SM[i])])).create(P(t, .8, 1.2)); lSM.set(`S_M(t),\\ M = ${M}`).write(P(t, .8, 1));
+    },
+  };
+  const redibujar = () => yo.render(tUlt);
+  return yo;
+});
+
+/* (b) la solución estacionaria para un forzante armónico: amplitud y fase en función de ω (se arrastra ω, slider de Γ). */
+slide('p5-b', g => {
+  const titulo = new Mix(g, 'P5 (b)  ·  forzante armónico', { size: 54, x: 70, y: 80 });
+  const X = 90;
+  const r1 = new Mix(g, 'Si $\\tilde f(t) = A\\,\\sen(\\omega t)$:', { size: 34, x: X, y: 210 });
+  const r2 = new Tex(g, '\\ddot x_\\omega + 2\\Gamma\\dot x_\\omega + \\omega_0^2 x_\\omega = A\\,\\sen(\\omega t) \\qquad (*)', { size: 36, x: X + 60, y: 300 });
+  const r3 = new Tex(g, '\\Rightarrow\\ \\ x_\\omega(t) = \\tilde A\\,\\sen(\\omega t - \\phi)', { size: 38, x: X + 60, y: 410 });
+  const r4 = new Tex(g, '\\displaystyle \\tilde A = \\frac{A}{\\sqrt{(\\omega_0^2 - \\omega^2)^2 + (2\\Gamma\\omega)^2}}', { size: 36, x: X + 120, y: 525 });
+  const r5 = new Tex(g, '\\displaystyle \\phi = \\arctan\\frac{2\\Gamma\\omega}{\\omega_0^2 - \\omega^2}\\ \\in [0, \\pi]', { size: 36, x: X + 120, y: 640 });
+  const r5n = new Mix(g, '(con $\\phi$ entre 0 y $\\pi$: la respuesta va atrasada)', { size: 26, x: X + 120, y: 705, italic: true, color: 'dim' });
+  // abajo a la izquierda: forzante y respuesta en el tiempo (misma escala)
+  const axT = new Axes(g, { x0: 110, x1: 900, y0: 790, y1: 960, xr: [0, 40], yr: [-1.25, 1.25], base: 0, xlabel: 't' });
+  const cFt = new Curve(g, null, { color: 'x', width: 3 }), cXt = new Curve(g, null, { color: 'k', width: 4 });
+  const lTr = new TexVar(g, { mix: true, size: 26, x: 130, y: 785, color: 'dim' });
+  // derecha: Ã/A y φ en función de ω
+  const axA = new Axes(g, { x0: 1060, x1: 1800, y0: 220, y1: 520, xr: [0, 3], yr: [0, 6], base: 0, xticks: [[1, '\\omega_0'], [2, '2\\omega_0']], yticks: [[1, '1'], [5, '5']], xlabel: '\\omega' });
+  const cpA = E('clipPath', { id: 'clipResA' }, g); E('rect', { x: 1040, y: 200, width: 800, height: 330 }, cpA);
+  const cA = new Curve(g, null, { color: 'k', width: 4, clip: 'clipResA' });
+  const lA = new Tex(g, '\\tilde A / A', { size: 34, color: 'k', x: 1078, y: 218 });
+  const axP = new Axes(g, { x0: 1060, x1: 1800, y0: 610, y1: 790, xr: [0, 3], yr: [0, 3.5], base: 0, xticks: [[1, '\\omega_0'], [2, '2\\omega_0']], yticks: [[PI / 2, '\\tfrac{\\pi}{2}'], [PI, '\\pi']], xlabel: '\\omega' });
+  const cP = new Curve(g, null, { color: 'h', width: 4 });
+  const lP = new Tex(g, '\\phi', { size: 34, color: 'h', x: 1078, y: 608 });
+  const guia = new Curve(g, null, { color: 'x', width: 2.5, dash: '6 8' }), pP = E('circle', { r: 8 }, g); pP.style.fill = C('h');
+  let w = .8;
+  const mW = new Manija(g, 'x', q => { w = clamp((q.x - axA.x0) / (axA.x1 - axA.x0) * 3, .05, 2.95); redibujar(); });
+  const GS = [.03, .05, .08, .1, .15, .2, .3, .5, .7, 1];
+  const slG = new Deslizador(g, 1080, 1400, 965, GS, () => redibujar(), { inicial: 3, rotulo: 'amortiguamiento', texto: G => `$\\Gamma$ = ${num(G)} $\\omega_0$` });
+  const rW = new TexVar(g, { mix: true, size: 30, x: 1060, y: 895 });
+  const WS = linspace(0, 3, 600), TS = linspace(0, 40, 800);
+  const T1 = 2.2, T2 = 5;
+  let tUlt = 0;
+  const yo = {
+    steps: [T1, T2 - T1, 2.4],
+    render(t) {
+      tUlt = t;
+      const G = slG.v, R = resp(w, G), pR = P(t, T1 + .6, 1.2), pI = P(t, T2, 1);
+      titulo.write(P(t, 0, .9)); r1.write(P(t, .3, .9)); r2.write(P(t, .8, 1.2));
+      r3.write(P(t, T1, 1)); r4.write(P(t, T1 + .6, 1.2)); r5.write(P(t, T1 + 1.2, 1.2)); r5n.write(P(t, T1 + 1.8, .8));
+      axA.create(pR); lA.write(pR); cA.set(WS.map(v => [axA.X(v), axA.Y(resp(v, G).A)])).create(P(t, T1 + .9, 1.2));
+      axP.create(pR); lP.write(pR); cP.set(WS.map(v => [axP.X(v), axP.Y(resp(v, G).fi)])).create(P(t, T1 + 1.3, 1.2));
+      const xA = axA.X(w), yA = axA.Y(Math.min(R.A, 6.3));
+      guia.set([[xA, yA], [xA, axP.Y(R.fi)]]).create(pI); pP.setAttribute('cx', xA); pP.setAttribute('cy', axP.Y(R.fi)); pP.style.opacity = pI;
+      mW.at(xA, yA).alpha(pI >= 1 ? 1 : 0); slG.alpha(pI);
+      rW.set(`$\\omega$ = ${num(w)} $\\omega_0$    ·    $\\tilde A$ = ${num(R.A)} $A$    ·    $\\phi$ = ${num(R.fi)}`).write(pI);
+      // en el tiempo: los dos con la misma escala (la mayor amplitud ocupa el alto)
+      const s = 1 / Math.max(1, R.A);
+      axT.create(pI);
+      cFt.set(TS.map(x => [axT.X(x), axT.Y(s * Math.sin(w * x))])).create(pI);
+      cXt.set(TS.map(x => [axT.X(x), axT.Y(s * R.A * Math.sin(w * x - R.fi))])).create(pI);
+      lTr.set(`$A\\,\\sen(\\omega t)$  y  $x_\\omega(t)$${s < 1 ? `   (escala × ${num(s)})` : ''}`).write(pI);
+    },
+  };
+  const redibujar = () => yo.render(tUlt);
+  return yo;
+});
+
+/* (c) superposición: cada armónico del forzante da su x_m; la suma es la solución estacionaria.
+   Sliders de Ω y Γ: cuando un (2m−1)Ω cae cerca de ω₀, ese armónico domina la respuesta. */
+slide('p5-c', g => {
+  const titulo = new Mix(g, 'P5 (c)  ·  superposición', { size: 54, x: 70, y: 80 });
+  const X = 80, sz = 31;
+  const r1 = new Tex(g, '\\displaystyle A_m = \\frac{4F_0}{(2m-1)\\pi},\\quad \\omega_m = (2m-1)\\Omega,\\quad x_m(t) = \\tilde A_m\\,\\sen(\\omega_m t - \\phi_m)', { size: sz, x: X, y: 210 });
+  const r2 = new Tex(g, '\\overset{(*)}{\\Rightarrow}\\ \\ \\ddot x_m + 2\\Gamma\\dot x_m + \\omega_0^2 x_m = A_m\\,\\sen(\\omega_m t)', { size: sz, x: X + 40, y: 320 });
+  const r3 = new Mix(g, 'sumando para todo $m$:', { size: 28, x: X + 40, y: 410, italic: true, color: 'dim' });
+  const r4 = new Tex(g, '\\displaystyle \\underbrace{\\sum_m \\ddot x_m}_{\\ddot x} + 2\\Gamma\\underbrace{\\sum_m \\dot x_m}_{\\dot x} + \\omega_0^2\\underbrace{\\sum_m x_m}_{x} = \\underbrace{\\sum_m A_m\\,\\sen(\\omega_m t)}_{f(t)}', { size: sz, x: X + 40, y: 500 });
+  const r5 = new Tex(g, '\\displaystyle \\Rightarrow\\ \\ \\boxed{\\ x(t) = \\sum_{m=1}^{\\infty} \\tilde A_m\\,\\sen((2m-1)\\Omega t - \\phi_m)\\ }', { size: 34, x: X + 40, y: 680, color: 'k' });
+  const r5n = new Mix(g, 'es solución (la estacionaria) de la ecuación del enunciado', { size: 28, x: X + 100, y: 770, italic: true, color: 'dim' });
+  const r6 = new Tex(g, '\\displaystyle \\text{con}\\ \\ \\tilde A_m = \\frac{A_m}{\\sqrt{(\\omega_0^2 - \\omega_m^2)^2 + (2\\Gamma\\omega_m)^2}},\\quad \\phi_m = \\phi(\\omega_m)\\ \\text{del (b)}', { size: 28, x: X + 100, y: 870 });
+  // derecha: f y x en el tiempo, y el espectro del forzante y de la respuesta
+  const axT = new Axes(g, { x0: 1010, x1: 1800, y0: 200, y1: 440, xr: [0, 2], yr: [-1.3, 1.3], base: 0, xticks: [[1, 'T']], xlabel: 't' });
+  correrTicks(axT);
+  const cF = new Curve(g, null, { color: 'x', width: 3 }), cX = new Curve(g, null, { color: 'k', width: 4.5 });
+  const lF = new Tex(g, 'f(t)', { size: 32, color: 'x', x: 1030, y: 198 }), lX = new TexVar(g, { mix: true, size: 30, color: 'k', x: 1130, y: 198 });
+  const axE = new Axes(g, { x0: 1010, x1: 1800, y0: 560, y1: 830, xr: [0, 4], yr: [0, 1.2], base: 0, xticks: [[1, '\\omega_0'], [2, '2\\omega_0'], [3, '3\\omega_0']], xlabel: '\\omega' });
+  const res = new Curve(g, null, { color: 'tenue', width: 2.5, dash: '6 7' });
+  const marca = new Curve(g, [[axE.X(1), axE.y0 - 10], [axE.X(1), axE.y1]], { color: 'h', width: 2.5, dash: '4 8' });
+  const sA = new Stems(g, axE.yb, { color: 'x', r: 6, width: 4 }), sR = new Stems(g, axE.yb, { color: 'k', r: 6, width: 4 });
+  const lA = new Tex(g, 'A_m', { size: 32, color: 'x', x: 1030, y: 556 }), lR = new Tex(g, '\\tilde A_m', { size: 32, color: 'k', x: 1120, y: 556 });
+  const lRes = new Mix(g, '(normalizados; punteada: la curva del (b))', { size: 24, x: 1210, y: 556, italic: true, color: 'dim' });
+  const OS = [.12, .15, .2, .25, .3, .33, .36, .4, .5, .6, .8, 1, 1.2, 1.5];
+  const slO = new Deslizador(g, 1030, 1300, 965, OS, () => redibujar(), { inicial: 5, rotulo: 'frecuencia del forzante', texto: O => `$\\Omega$ = ${num(O)} $\\omega_0$` });
+  const GS = [.02, .05, .1, .2, .4];
+  const slG = new Deslizador(g, 1530, 1680, 965, GS, () => redibujar(), { inicial: 1, rotulo: 'amortiguamiento', texto: G => `$\\Gamma$ = ${num(G)}` });
+  const TS = linspace(0, 2, 800), WS = linspace(0, 4, 500), MM = 60;
+  const T1 = 2.4, T2 = 4.8;
+  const ley = leyendas(g, [['cuando algún $(2m-1)\\,\\Omega$ cae cerca de $\\omega_0$, ese armónico domina la respuesta', T2 + 1.6]], { size: 34, y: 1045 });
+  let tUlt = 0;
+  const yo = {
+    steps: [T1, T2 - T1, 2.6],
+    render(t) {
+      tUlt = t;
+      const O = slO.v, G = slG.v, T = 2 * PI / O;
+      const ms = Array.from({ length: MM }, (_, i) => { const m = i + 1, wm = (2 * m - 1) * O, Am = 4 / ((2 * m - 1) * PI), R = resp(wm, G); return { wm, Am, At: Am * R.A, fi: R.fi }; });
+      const xs = TS.map(u => ms.reduce((s, q) => s + q.At * Math.sin(q.wm * u * T - q.fi), 0)), mx = Math.max(...xs.map(Math.abs));
+      const p0 = P(t, .3, 1);
+      titulo.write(P(t, 0, .9)); r1.write(P(t, .4, 1.4)); r2.write(P(t, 1.2, 1.2));
+      r3.write(P(t, T1, .8)); r4.write(P(t, T1 + .5, 1.6));
+      r5.write(P(t, T2, 1.2)); r5n.write(P(t, T2 + .8, .9)); r6.write(P(t, T2 + 1.2, 1));
+      axT.create(p0); lF.write(p0);
+      cF.set(TS.map(u => [axT.X(u), axT.Y(cuadrada(u, 1))])).create(p0);
+      cX.set(TS.map((u, i) => [axT.X(u), axT.Y(xs[i] / mx)])).create(P(t, .6, 1.2));
+      lX.set(`$x(t)$ (escalada: máximo ${num(mx)})`).write(P(t, .6, 1));
+      axE.create(p0); marca.create(p0);
+      const vis = ms.filter(q => q.wm <= 3.95), mA = ms[0].Am, mR = Math.max(...vis.map(q => q.At));
+      sA.set(vis.map(q => [axE.X(q.wm) - 5, axE.Y(q.Am / mA)]), P(t, .6, 1));
+      sR.set(vis.map(q => [axE.X(q.wm) + 5, axE.Y(q.At / mR)]), P(t, .9, 1));
+      const mRes = Math.max(...WS.map(v => resp(v, G).A));
+      res.set(WS.map(v => [axE.X(v), axE.Y(resp(v, G).A / mRes)])).create(P(t, .6, 1));
+      lA.write(p0); lR.write(P(t, .9, 1)); lRes.write(P(t, .9, 1));
+      slO.alpha(P(t, 1, .6)); slG.alpha(P(t, 1, .6));
+      ley(t);
+    },
+  };
+  const redibujar = () => yo.render(tUlt);
+  return yo;
+});
+
 Object.assign(TITULOS, {
   titulo: 'Título', r2: 'En ℝ²', rn: 'En ℝᴺ', producto: 'Del producto interno a la integral', base: 'La base de Fourier',
   coeficientes: 'Los coeficientes son proyecciones', reconstruir: 'Sumar es reconstruir', 'por-que': '¿Por qué esta base?',
-  ej1c: '1.c: el camino fácil',
+  'p1-enunciado': 'Ejercicio 1.c', 'p1-a0bn': '1.c (a): a₀ y bₙ', 'p1-an': '1.c (a): aₙ', 'p1-b': '1.c (b): f₂ explícita',
+  'p1-c-largo': '1.c (c): el camino largo', ej1c: '1.c (c): el camino fácil',
+  'p5-enunciado': 'Ejercicio 5', 'p5-bn': 'P5 (a): los bₙ', 'p5-b': 'P5 (b): forzante armónico', 'p5-c': 'P5 (c): superposición',
 });
 arrancar();
 </script>
