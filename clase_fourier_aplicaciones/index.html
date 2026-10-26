@@ -1,0 +1,2642 @@
+<!doctype html>
+<html lang="es" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Aplicaciones de Fourier</title>
+<style>
+@font-face{font-family:"CMU";src:url("../vendor/cmu/cmu-serif-500-roman.woff2") format("woff2");font-weight:400;font-style:normal}
+@font-face{font-family:"CMU";src:url("../vendor/cmu/cmu-serif-500-italic.woff2") format("woff2");font-weight:400;font-style:italic}
+@font-face{font-family:"CMU";src:url("../vendor/cmu/cmu-serif-700-roman.woff2") format("woff2");font-weight:700;font-style:normal}
+
+/* Tema claro (por defecto): pensado para proyector. Colores oscuros y saturados, nada de pasteles. */
+:root{
+  --bg:#ffffff; --fg:#141414; --ax:#3a3a3a; --dim:#6a6a6a; --tenue:#a0a0a0;
+  --x:#1450a8;      /* espacio real / tiempo */
+  --k:#c4420a;      /* frecuencias */
+  --h:#1b7a32;      /* operador H(k) */
+  --ruido:#7a2bbf;  /* ruido */
+}
+:root[data-theme=dark]{
+  --bg:#121315; --fg:#f2f2f2; --ax:#c4c4c4; --dim:#9c9c9c; --tenue:#686868;
+  --x:#5fb4ff; --k:#ff8a3d; --h:#5ed473; --ruido:#c99bff;
+}
+html,body{margin:0;height:100%;background:var(--bg);overflow:hidden;user-select:none}
+#stage{position:fixed;inset:0;width:100vw;height:100vh;display:block;background:var(--bg)}
+text{font-family:"CMU",serif}
+/* colores dentro de fórmulas: \class{cx}{...} */
+.cx{fill:var(--x);stroke:var(--x)} .ck{fill:var(--k);stroke:var(--k)}
+.ch{fill:var(--h);stroke:var(--h)} .cr{fill:var(--ruido);stroke:var(--ruido)} .cd{fill:var(--dim);stroke:var(--dim)}
+/* imágenes con una versión por tema */
+:root[data-theme=dark] .solo-claro, :root:not([data-theme=dark]) .solo-oscuro{display:none}
+.parlante{cursor:pointer} .parlante:hover{opacity:.7}
+#hud{position:fixed;right:10px;bottom:6px;font:15px "CMU",serif;color:var(--dim);opacity:.55;cursor:pointer;padding:4px 8px;border-radius:6px}
+#hud:hover{opacity:1;background:color-mix(in srgb, var(--tenue) 25%, transparent)}
+/* menú de slides: se despliega hacia arriba desde el número */
+#menu{position:fixed;right:10px;bottom:38px;width:min(800px,92vw);max-height:82vh;overflow:auto;z-index:10;
+  background:var(--bg);border:1.5px solid var(--tenue);border-radius:12px;box-shadow:0 12px 32px rgba(0,0,0,.2);padding:14px}
+#grilla{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}
+.mini{cursor:pointer;border:2px solid transparent;border-radius:9px;padding:5px;font:15px "CMU",serif;color:var(--dim)}
+.mini:hover{border-color:var(--tenue)} .mini.actual{border-color:var(--h);color:var(--fg)}
+.mini svg{display:block;width:100%;aspect-ratio:16/9;background:var(--bg);border:1px solid var(--tenue);border-radius:5px;margin-bottom:4px}
+#cargando{position:fixed;inset:0;display:grid;place-items:center;font:28px "CMU",serif;color:var(--dim)}
+</style>
+<script>
+window.MathJax = {
+  svg: { fontCache: 'none' },
+  startup: { typeset: false },
+  tex: { macros: { F: '\\mathcal{F}' } }
+};
+</script>
+<script src="../vendor/mathjax/tex-svg-full.js"></script>
+<script src="datos.js" onerror="window.DATOS = null"></script>
+</head>
+<body>
+<svg id="stage" viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid meet"></svg>
+<div id="hud" title="Ir a una slide (M)"></div>
+<div id="menu" hidden><div id="grilla"></div></div>
+<div id="cargando">cargando…</div>
+<script>
+/* ════════════════════════════════════════════════════════════════════════════
+   Motor: cada slide arma sus objetos una vez y expone render(t), una función
+   pura del tiempo local. Sus "pasos" son tramos [b_k, b_k+1]: un click anima el
+   tramo siguiente; volver atrás salta al final del tramo anterior sin animar.
+   ════════════════════════════════════════════════════════════════════════════ */
+const NS = 'http://www.w3.org/2000/svg';
+const stage = document.getElementById('stage');
+function E(tag, attrs = {}, parent) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
+const smooth = v => { v = clamp(v); return v * v * v * (v * (v * 6 - 15) + 10); };
+const P = (t, a, d = 1) => d <= 0 ? (t >= a ? 1 : 0) : smooth((t - a) / d);   // progreso suave
+const lin = (t, a, d) => clamp((t - a) / d);                                    // progreso lineal
+const lerp = (a, b, p) => a + (b - a) * p;
+const C = n => `var(--${n})`;
+const pathD = pts => 'M' + pts.map(p => p[0].toFixed(1) + ',' + p[1].toFixed(1)).join('L');
+const lerpPts = (A, B, p) => A.map((a, i) => [lerp(a[0], B[i][0], p), lerp(a[1], B[i][1], p)]);
+const fmt = (v, d = 0) => v.toLocaleString('es-AR', { minimumFractionDigits: d, maximumFractionDigits: d });
+function rng(seed) { let s = seed >>> 0; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
+function gauss(r) { return Math.sqrt(-2 * Math.log(r() + 1e-12)) * Math.cos(2 * Math.PI * r()); }
+
+// FFT radix-2 (in place) y módulo de la DFT de una señal real
+function fft(re, im) {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let b = n >> 1; for (; j & b; b >>= 1) j ^= b; j ^= b;
+    if (i < j) { [re[i], re[j]] = [re[j], re[i]]; [im[i], im[j]] = [im[j], im[i]]; }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const a = -2 * Math.PI / len, wr = Math.cos(a), wi = Math.sin(a);
+    for (let i = 0; i < n; i += len) {
+      let cr = 1, ci = 0;
+      for (let k = 0; k < len / 2; k++) {
+        const ur = re[i + k], ui = im[i + k], j = i + k + len / 2;
+        const vr = re[j] * cr - im[j] * ci, vi = re[j] * ci + im[j] * cr;
+        re[i + k] = ur + vr; im[i + k] = ui + vi; re[j] = ur - vr; im[j] = ui - vi;
+        [cr, ci] = [cr * wr - ci * wi, cr * wi + ci * wr];
+      }
+    }
+  }
+}
+function modDFT(x) { const re = Float64Array.from(x), im = new Float64Array(x.length); fft(re, im); return Array.from({ length: x.length / 2 + 1 }, (_, k) => Math.hypot(re[k], im[k])); }
+const hann = M => Array.from({ length: M }, (_, n) => Math.sin(Math.PI * n / M) ** 2);
+
+/* ── mapas de color de los espectrogramas (de fondo a "mucha energía", uno por tema) ── */
+const MAPAS = {
+  claro: [[0, '#ffffff'], [.35, '#f2b38a'], [.7, '#c4420a'], [1, '#2a0c00']],
+  oscuro: [[0, '#121315'], [.35, '#6a2a08'], [.7, '#ff8a3d'], [1, '#fff1dc']],
+};
+function colorMapa(v, mapa) {
+  const st = MAPAS[mapa]; let i = 1; while (i < st.length - 1 && v > st[i][0]) i++;
+  const [a, ca] = st[i - 1], [b, cb] = st[i], q = clamp((v - a) / (b - a));
+  return [1, 3, 5].map(j => lerp(parseInt(ca.substr(j, 2), 16), parseInt(cb.substr(j, 2), 16), q));
+}
+// matriz v[fila][col] en [0,1] (fila 0 = frecuencia alta) → dataURL PNG
+function pngMapa(v, mapa) {
+  const h = v.length, w = v[0].length, cv = document.createElement('canvas');
+  cv.width = w; cv.height = h;
+  const cx = cv.getContext('2d'), im = cx.createImageData(w, h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const [r, g, b] = colorMapa(v[y][x], mapa), o = 4 * (y * w + x);
+    im.data[o] = r; im.data[o + 1] = g; im.data[o + 2] = b; im.data[o + 3] = 255;
+  }
+  cx.putImageData(im, 0, 0);
+  return cv.toDataURL();
+}
+
+/* ── audio ─────────────────────────────────────────────────────────────────── */
+// Sólo suena cuando se avanza a un paso que lo pide: nunca al entrar a una slide.
+const AUD = {}, PARLANTES = []; let sonando = null;
+function sonar(n) {
+  callar();
+  if (!window.DATOS || !DATOS.audio[n] || window.__exportando) return;
+  AUD[n] ??= new Audio('data:audio/mpeg;base64,' + DATOS.audio[n]);
+  sonando = AUD[n]; sonando.currentTime = 0; sonando.play().catch(() => {});
+}
+function callar() { if (sonando) { sonando.pause(); sonando = null; } }
+
+/* ── objetos ("mobjects") ─────────────────────────────────────────────────── */
+class M {
+  constructor(parent) { this.g = E('g', {}, parent); this.x = 0; this.y = 0; this.s = 1; }
+  at(x, y, s = 1) { this.x = x; this.y = y; this.s = s; this.g.setAttribute('transform', `translate(${x.toFixed(1)},${y.toFixed(1)}) scale(${s})`); return this; }
+  alpha(a) { this.g.style.opacity = a; this.g.style.visibility = a > 0.001 ? 'visible' : 'hidden'; return this; }
+}
+
+// Texto (CMU). write(p): se dibuja el contorno y después se rellena, como Write de Manim.
+class Txt extends M {
+  constructor(parent, str, o = {}) {
+    super(parent);
+    this.size = o.size || 40;
+    this.t = E('text', { x: 0, y: 0, 'font-size': this.size, 'text-anchor': o.anchor || 'start' }, this.g);
+    if (o.italic) this.t.setAttribute('font-style', 'italic');
+    if (o.bold) this.t.setAttribute('font-weight', 700);
+    this.t.textContent = str;
+    const col = C(o.color || 'fg');
+    Object.assign(this.t.style, { fill: col, stroke: col, strokeLinejoin: 'round' });
+    if (o.x !== undefined) this.at(o.x, o.y);
+    this.write(1);
+  }
+  get width() { return this.t.getComputedTextLength(); }
+  write(p) {
+    const L = this.size * 3.2, p1 = clamp(p / .6), p2 = clamp((p - .35) / .65);
+    const st = this.t.style;
+    st.strokeDasharray = `${L} ${L}`; st.strokeDashoffset = L * (1 - p1);
+    st.strokeWidth = p >= 1 || p <= 0 ? 0 : this.size * .03 * (1 - p2);
+    st.fillOpacity = p2; st.visibility = p > 0 ? 'visible' : 'hidden';
+    return this;
+  }
+}
+
+// Fórmula (MathJax → SVG con los glifos como paths). Origen = línea de base.
+class Tex extends M {
+  constructor(parent, src, o = {}) {
+    super(parent);
+    const size = o.size || 44, ex = size * 0.4306;
+    const s = MathJax.tex2svg(src, { display: false }).querySelector('svg');
+    const w = parseFloat(s.getAttribute('width')) * ex, h = parseFloat(s.getAttribute('height')) * ex;
+    const va = parseFloat(((s.getAttribute('style') || '').match(/vertical-align:\s*(-?[\d.]+)ex/) || [0, 0])[1]) * ex;
+    const x0 = o.anchor === 'middle' ? -w / 2 : o.anchor === 'end' ? -w : 0;
+    s.setAttribute('x', x0); s.setAttribute('y', -h - va); s.setAttribute('width', w); s.setAttribute('height', h);
+    s.removeAttribute('style'); s.style.overflow = 'visible';
+    this.g.appendChild(s); this.g.style.color = C(o.color || 'fg');
+    this.w = w; this.h = h; this.x0 = x0;
+    this.parts = [...s.querySelectorAll('path,rect')];
+    this.parts.forEach(q => q.tagName === 'path' && q.setAttribute('pathLength', 1));
+    if (o.x !== undefined) this.at(o.x, o.y);
+    this.write(1);
+  }
+  write(p) {
+    const n = this.parts.length, lag = n > 1 ? .4 : 0;
+    this.parts.forEach((q, i) => {
+      const lp = clamp((p - (n > 1 ? i / (n - 1) * lag : 0)) / (1 - lag));
+      if (q.tagName === 'rect') { q.style.opacity = lp; return; }
+      const p1 = clamp(lp / .6), p2 = clamp((lp - .4) / .6), st = q.style;
+      st.strokeDasharray = '1 1'; st.strokeDashoffset = 1 - p1;
+      st.strokeWidth = lp >= 1 || lp <= 0 ? 0 : 26 * (1 - p2);
+      st.fillOpacity = p2; st.visibility = lp > 0 ? 'visible' : 'hidden';
+    });
+    return this;
+  }
+}
+
+// Texto con fórmulas intercaladas: 'espacio real · $x$'
+class Mix extends M {
+  constructor(parent, str, o = {}) {
+    super(parent);
+    const size = o.size || 40, inner = E('g', {}, this.g);
+    this.parts = [];
+    str.split('$').forEach((s, i) => {
+      if (!s) return;
+      let part;
+      if (i % 2) { part = new Tex(inner, s, { size: size * 1.04, color: o.color }); part.wd = part.w; }
+      else {
+        if (!s.trim()) { this.parts.length && (this.parts.at(-1).trail = true); return; }
+        part = new Txt(inner, s.trim(), { size, color: o.color, italic: o.italic, bold: o.bold });
+        part.wd = part.width; part.lead = /^\s/.test(s); part.trail = /\s$/.test(s);
+      }
+      this.parts.push(part);
+    });
+    let x = 0;
+    this.parts.forEach((p, i) => {
+      if (i && (this.parts[i - 1].trail || p.lead)) x += size * .27;
+      p.at(x, 0); x += p.wd;
+    });
+    this.w = x;
+    inner.setAttribute('transform', `translate(${o.anchor === 'middle' ? -x / 2 : o.anchor === 'end' ? -x : 0},0)`);
+    if (o.x !== undefined) this.at(o.x, o.y);
+  }
+  write(p) {
+    let acc = 0;
+    // cada parte arranca según su posición y la última termina justo en p = 1
+    this.parts.forEach(q => { const a = acc / this.w, b = (acc + q.wd) / this.w; acc += q.wd; q.write(clamp((p - .75 * a) / (.25 + .75 * (b - a)))); });
+    return this;
+  }
+}
+
+// Curva (polilínea). create(p) la dibuja de punta a punta.
+class Curve extends M {
+  constructor(parent, pts, o = {}) {
+    super(parent);
+    this.p = E('path', { fill: 'none', 'stroke-linejoin': 'round', 'stroke-linecap': 'round', pathLength: 1 }, this.g);
+    Object.assign(this.p.style, { stroke: C(o.color || 'x'), strokeWidth: o.width || 5 });
+    if (o.clip) this.g.setAttribute('clip-path', `url(#${o.clip})`);
+    this.dash = o.dash;
+    if (pts) this.set(pts);
+    this.create(1);
+  }
+  set(pts) { this.pts = pts; this.p.setAttribute('d', pathD(pts)); return this; }
+  create(p) {
+    if (this.dash) { this.p.removeAttribute('pathLength'); this.p.style.strokeDasharray = this.dash; this.alpha(p); return this; }
+    this.p.style.strokeDasharray = '1 1'; this.p.style.strokeDashoffset = 1 - p;
+    this.p.style.visibility = p > 0 ? 'visible' : 'hidden';
+    return this;
+  }
+}
+
+// Espectro como "stem plot": un palito por frecuencia, con punto si son pocos.
+// set(tops, p, base): tops = [[x, y]]; p = progreso de aparición (de izquierda a derecha).
+class Stems extends M {
+  constructor(parent, base, o = {}) {
+    super(parent);
+    this.base = base; this.r = o.r ?? 6;
+    const col = C(o.color || 'k');
+    this.p = E('path', { fill: 'none' }, this.g);
+    Object.assign(this.p.style, { stroke: col, strokeWidth: o.width || 3.5 });
+    this.d = E('path', {}, this.g); this.d.style.fill = col;
+  }
+  set(tops, p = 1, base = this.base) {
+    const n = tops.length, r = this.r; let d = '', dd = '';
+    tops.forEach(([x, y], i) => {
+      const q = smooth(p * 1.6 - i / n * .6); if (q <= 0) return;
+      const yt = lerp(base, y, q); if (base - yt < .8) return;
+      d += `M${x.toFixed(1)},${base.toFixed(1)}V${yt.toFixed(1)}`;
+      if (r > 0 && q > .5) { const rr = r * clamp(q * 2 - 1); dd += `M${(x - rr).toFixed(1)},${yt.toFixed(1)}a${rr},${rr} 0 1,0 ${2 * rr},0a${rr},${rr} 0 1,0 ${-2 * rr},0`; }
+    });
+    this.p.setAttribute('d', d || 'M0,0'); this.d.setAttribute('d', dd || 'M0,0');
+    return this;
+  }
+}
+
+// Flecha recta. grow(p) la estira desde el origen.
+class Arrow extends M {
+  constructor(parent, x1, y1, x2, y2, o = {}) {
+    super(parent);
+    Object.assign(this, { x1, y1, x2, y2, hl: o.head || 22 });
+    const col = C(o.color || 'fg');
+    this.l = E('line', { 'stroke-linecap': 'butt' }, this.g);
+    Object.assign(this.l.style, { stroke: col, strokeWidth: o.width || 4 });
+    if (o.dash) this.l.style.strokeDasharray = o.dash;
+    this.h = E('path', { d: `M0,0L${-this.hl},${-this.hl * .42}L${-this.hl * .78},0L${-this.hl},${this.hl * .42}Z` }, this.g);
+    this.h.style.fill = col;
+    this.grow(1);
+  }
+  grow(p) {
+    const { x1, y1, x2, y2, hl } = this, L = Math.hypot(x2 - x1, y2 - y1), ux = (x2 - x1) / L, uy = (y2 - y1) / L;
+    const x = lerp(x1, x2, p), y = lerp(y1, y2, p), back = Math.min(hl * .8, L * p);
+    this.l.setAttribute('x1', x1); this.l.setAttribute('y1', y1);
+    this.l.setAttribute('x2', x - ux * back); this.l.setAttribute('y2', y - uy * back);
+    this.h.setAttribute('transform', `translate(${x},${y}) rotate(${Math.atan2(uy, ux) * 180 / Math.PI}) scale(${clamp(p * 4)})`);
+    this.alpha(p > 0 ? 1 : 0);
+    return this;
+  }
+}
+
+// Ejes cartesianos (y lineal o logarítmica en décadas). xticks/yticks: [[valor, 'tex']].
+class Axes extends M {
+  constructor(parent, o) {
+    super(parent);
+    Object.assign(this, o);   // x0 x1 y0 y1 xr yr log base(valor y del eje x)
+    const yb = this.yb = this.Y(o.base ?? o.yr[0]);
+    this.ax = new Curve(this.g, [[this.x0 - 6, yb], [this.x1 + 26, yb]], { color: 'ax', width: 2.5 });
+    this.ay = new Curve(this.g, [[this.x0, this.y1 + 6], [this.x0, this.y0 - 26]], { color: 'ax', width: 2.5 });
+    const hd = 'M0,0L-14,-6.5L-11,0L-14,6.5Z';
+    this.hx = E('path', { d: hd, transform: `translate(${this.x1 + 30},${yb})` }, this.g);
+    this.hy = E('path', { d: hd, transform: `translate(${this.x0},${this.y0 - 30}) rotate(-90)` }, this.g);
+    this.hx.style.fill = this.hy.style.fill = C('ax');
+    this.extra = [];
+    if (o.xlabel) this.extra.push(new Tex(this.g, o.xlabel, { size: 36, x: this.x1 + 30, y: yb + 44, anchor: 'middle', color: 'ax' }));
+    let marcas = '';
+    for (const [v, s] of o.xticks || []) { marcas += `M${this.X(v)},${yb}v9`; this.extra.push(new Tex(this.g, s, { size: 28, x: this.X(v), y: yb + 38, anchor: 'middle', color: 'dim' })); }
+    for (const [v, s] of o.yticks || []) { marcas += `M${this.x0},${this.Y(v)}h-9`; this.extra.push(new Tex(this.g, s, { size: 28, x: this.x0 - 16, y: this.Y(v) + 10, anchor: 'end', color: 'dim' })); }
+    this.marcas = E('path', { d: marcas || 'M0,0' }, this.g);
+    Object.assign(this.marcas.style, { stroke: C('ax'), strokeWidth: 2.5 });
+  }
+  X(u) { return this.x0 + (u - this.xr[0]) / (this.xr[1] - this.xr[0]) * (this.x1 - this.x0); }
+  Y(v) {
+    if (this.log) v = Math.log10(Math.max(v, 10 ** this.yr[0]));
+    return this.y1 - (clamp(v, this.yr[0], Infinity) - this.yr[0]) / (this.yr[1] - this.yr[0]) * (this.y1 - this.y0);
+  }
+  pts(xs, ys) { return xs.map((u, i) => [this.X(u), this.Y(ys[i])]); }
+  create(p) {
+    this.ax.create(p); this.ay.create(p);
+    this.hx.style.opacity = this.hy.style.opacity = this.marcas.style.opacity = clamp(p * 3 - 2);
+    this.extra.forEach(e => e.write(clamp(p * 2 - 1)));
+    return this;
+  }
+}
+
+// Línea punteada que crece (divisor entre los dos mundos).
+class DLine extends M {
+  constructor(parent, x1, y1, x2, y2, o = {}) {
+    super(parent);
+    Object.assign(this, { x1, y1, x2, y2 });
+    this.l = E('line', { x1, y1, 'stroke-linecap': 'round' }, this.g);
+    Object.assign(this.l.style, { stroke: C(o.color || 'tenue'), strokeWidth: o.width || 3.5, strokeDasharray: o.dash || '3 11' });
+    this.grow(1);
+  }
+  grow(p) { this.l.setAttribute('x2', lerp(this.x1, this.x2, p)); this.l.setAttribute('y2', lerp(this.y1, this.y2, p)); this.alpha(p > 0 ? 1 : 0); return this; }
+}
+
+// Imagen (dataURL) con una versión por tema; reveal(p) la descubre de izquierda a derecha.
+class Img extends M {
+  constructor(parent, urls, x, y, w, h) {
+    super(parent);
+    const id = 'clip' + Math.random().toString(36).slice(2, 8);
+    const cp = E('clipPath', { id }, this.g);
+    this.r = E('rect', { x, y, width: w, height: h }, cp);
+    Object.assign(this, { x0: x, w });
+    for (const [tema, url] of Object.entries(urls))
+      E('image', { href: url, x, y, width: w, height: h, preserveAspectRatio: 'none', class: 'solo-' + tema, 'clip-path': `url(#${id})` }, this.g);
+  }
+  reveal(p) { this.r.setAttribute('x', this.x0); this.r.setAttribute('width', Math.max(0, this.w * p)); this.alpha(p > 0 ? 1 : 0); return this; }
+  cambiar(urls, x, w) {   // otra imagen (y otro ancho) en el mismo lugar
+    this.x0 = x; this.w = w;
+    for (const im of this.g.querySelectorAll('image')) {
+      const tema = im.getAttribute('class').replace('solo-', '');
+      im.setAttribute('href', urls[tema]); im.setAttribute('x', x); im.setAttribute('width', w);
+    }
+    return this;
+  }
+  ventana(xa, xb) { this.r.setAttribute('x', xa); this.r.setAttribute('width', Math.max(0, xb - xa)); return this; }
+}
+
+// Parlante clickeable: reproduce un audio (o el que devuelva la función).
+class Parlante extends M {
+  constructor(parent, x, y, nombre, o = {}) {
+    super(parent);
+    this.g.classList.add('parlante');
+    const s = o.size || 1.5, col = 'var(--parl, var(--dim))';
+    this.nombre = nombre; PARLANTES.push(this);
+    const inner = E('g', { transform: `scale(${s}) translate(-12,-12)` }, this.g);
+    E('rect', { x: -4, y: -4, width: 32, height: 32, fill: 'transparent' }, inner);
+    const cuerpo = E('path', { d: 'M3,9h4l5,-4.5v15l-5,-4.5h-4z' }, inner); cuerpo.style.fill = col;
+    const ondas = E('path', { d: 'M15.5,8.5a5,5 0 0 1 0,7M18.5,5.5a9,9 0 0 1 0,13', fill: 'none', 'stroke-linecap': 'round' }, inner);
+    Object.assign(ondas.style, { stroke: col, strokeWidth: 2 });
+    this.g.addEventListener('click', e => { e.stopPropagation(); sonar(typeof nombre === 'function' ? nombre() : nombre); });
+    this.at(x, y);
+  }
+}
+
+// Cabezal de reproducción: una barra que recorre la onda mientras suena alguno de sus audios.
+// Va sincronizado con el audio real (no con la línea de tiempo), así anda también con el parlante.
+const CABEZALES = [];
+class Cabezal {
+  constructor(parent, nombres, x0, x1, y0, y1, dur) {
+    Object.assign(this, { nombres, x0, x1, dur });
+    this.g = E('g', {}, parent);
+    this.sombra = E('rect', { y: y0, height: y1 - y0, x: x0, width: 0 }, this.g);
+    Object.assign(this.sombra.style, { fill: C('h'), opacity: .12 });
+    this.l = E('line', { y1: y0, y2: y1, 'stroke-linecap': 'round' }, this.g);
+    Object.assign(this.l.style, { stroke: C('h'), strokeWidth: 4 });
+    CABEZALES.push(this);
+    this.actualizar();
+  }
+  actualizar() {
+    const n = sonando && !sonando.paused && this.nombres.find(k => AUD[k] === sonando);
+    this.g.style.display = n ? '' : 'none';
+    if (!n) return;
+    const x = lerp(this.x0, this.x1, clamp(sonando.currentTime / this.dur));
+    this.l.setAttribute('x1', x); this.l.setAttribute('x2', x);
+    this.sombra.setAttribute('width', x - this.x0);
+  }
+}
+
+/* ── marco de dos mundos ──────────────────────────────────────────────────── */
+// Cajas (sin borde): arriba-izq f, arriba-der f̂, abajo-der H f̂, abajo-izq g.
+const BOX = {
+  TL: { x0: 150, x1: 790, y0: 232, y1: 432 }, TR: { x0: 1130, x1: 1770, y0: 232, y1: 432 },
+  BL: { x0: 150, x1: 790, y0: 660, y1: 860 }, BR: { x0: 1130, x1: 1770, y0: 660, y1: 860 },
+};
+const MID = b => [(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2];
+
+function marco(g, o = {}) {
+  const F = {};
+  F.div = new DLine(g, 960, 150, 960, 900);
+  F.lx = new Mix(g, o.izq || 'espacio real  ·  $x$', { size: 46, anchor: 'middle', x: 480, y: 160, color: 'x' });
+  F.lk = new Mix(g, o.der || 'frecuencias  ·  $k$', { size: 46, anchor: 'middle', x: 1440, y: 160, color: 'k' });
+  F.show = p => { F.div.grow(p); F.lx.write(p); F.lk.write(p); };
+  return F;
+}
+// Flechas del diagrama: 𝓕 arriba, ×H a la derecha, 𝓕⁻¹ abajo, L (directo) a la izquierda.
+function flechas(g, hTex = 'H(k)') {
+  const A = {};
+  A.F = new Arrow(g, 830, 332, 1090, 332);
+  A.tF = tapa(g, 960, 296, 56, 50);
+  A.Fl = new Tex(g, '\\F', { size: 52, x: 960, y: 308, anchor: 'middle' });
+  A.H = new Arrow(g, 1450, 472, 1450, 626, { color: 'h' });
+  A.Hl = new Tex(g, '\\times\\,' + hTex, { size: 46, x: 1478, y: 564, color: 'h' });
+  A.Fi = new Arrow(g, 1090, 760, 830, 760);
+  A.tFi = tapa(g, 960, 718, 80, 50);
+  A.Fil = new Tex(g, '\\F^{-1}', { size: 52, x: 960, y: 736, anchor: 'middle' });
+  A.L = new Arrow(g, 470, 472, 470, 626, { dash: '9 9', color: 'dim' });
+  A.Ll = new Tex(g, 'L', { size: 46, x: 444, y: 564, anchor: 'end', color: 'dim' });
+  // las tapas sólo se ven cuando se ve su rótulo
+  A.tapas = () => { A.tF.style.opacity = A.Fl.parts[0].style.visibility === 'visible' ? 1 : 0; A.tFi.style.opacity = A.Fil.parts[0].style.visibility === 'visible' ? 1 : 0; };
+  return A;
+}
+// Fondo para que una etiqueta tape el divisor punteado
+function tapa(g, x, y, w, h) { const r = E('rect', { x: x - w / 2, y: y - h / 2, width: w, height: h }, g); r.style.fill = C('bg'); return r; }
+// Rótulo de un panel, arriba a la izquierda
+const rotulo = (g, s, b, col, dx = 18) => new Tex(g, s, { size: 38, x: b.x0 + dx, y: b.y0 - 8, color: col });
+// Franja inferior: varias leyendas que se reemplazan [texto, desde, hasta]
+function leyendas(g, lista, o = {}) {
+  const ls = lista.map(([s, a, b]) => ({ m: new Mix(g, s, { size: o.size || 40, x: 960, y: o.y || 1000, anchor: 'middle', italic: o.italic }), a, b: b ?? 1e9 }));
+  return t => ls.forEach(l => { l.m.write(P(t, l.a, .9)); l.m.alpha(1 - P(t, l.b, .35)); });
+}
+
+/* ── registro de slides ───────────────────────────────────────────────────── */
+const DEF = [];
+const slide = (nombre, build) => DEF.push({ nombre, build });
+function sinDatos(g) {
+  new Txt(g, 'Faltan los datos: correr preparar_datos.py', { size: 44, x: 960, y: 540, anchor: 'middle', color: 'dim' });
+  return { steps: [0], render() {} };
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   0.1  Título
+   ════════════════════════════════════════════════════════════════════════════ */
+slide('titulo', g => {
+  const t1 = new Txt(g, 'Aplicaciones de la transformada de Fourier', { size: 78, anchor: 'middle', x: 960, y: 420 });
+  const t2 = new Mix(g, 'transformar  ·  operar  ·  antitransformar', { size: 46, anchor: 'middle', x: 960, y: 505, italic: true, color: 'dim' });
+  const xs = Array.from({ length: 700 }, (_, i) => i / 699);
+  const onda = new Curve(g, xs.map(u => [260 + 1400 * u, 700 - 55 * (Math.sin(2 * Math.PI * 3 * u) + .6 * Math.sin(2 * Math.PI * 7 * u + .5) + .3 * Math.sin(2 * Math.PI * 16 * u))]), { color: 'x', width: 5 });
+  const pie = new Txt(g, 'Introducción al Modelado Continuo  ·  2C 2026', { size: 30, anchor: 'middle', x: 960, y: 990, color: 'dim' });
+  return {
+    steps: [2.6],
+    render(t) { t1.write(P(t, 0, 1.4)); t2.write(P(t, .8, 1.1)); onda.create(P(t, 1.1, 1.5)); pie.write(P(t, 1.6, .8)); },
+  };
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   0.2  Dos mundos: una señal = suma de ondas; cada onda es un pico en k.
+   ════════════════════════════════════════════════════════════════════════════ */
+slide('dos-mundos', g => {
+  const titulo = new Txt(g, 'Dos mundos', { size: 54, x: 70, y: 80 });
+  const F = marco(g);
+  const comps = [{ k: 2, a: 1, ph: 0 }, { k: 5, a: .6, ph: .9 }, { k: 11, a: .35, ph: 2.1 }];
+  const n = 500, xs = Array.from({ length: n }, (_, i) => 2 * Math.PI * i / (n - 1));
+  const X = x => 150 + x / (2 * Math.PI) * 640, ESC = 48;
+  const yf = 335, filas = [540, 660, 780];
+  const onda = (c, y0) => xs.map(x => [X(x), y0 - ESC * c.a * Math.sin(c.k * x + c.ph)]);
+  const fPts = xs.map(x => [X(x), yf - ESC * comps.reduce((s, c) => s + c.a * Math.sin(c.k * x + c.ph), 0)]);
+  const ejeF = new Curve(g, [[140, yf], [800, yf]], { color: 'tenue', width: 2 });
+  const f = new Curve(g, fPts, { color: 'x' });
+  const fl = new Tex(g, 'f(x)', { size: 44, x: 150, y: 240, color: 'x' });
+  // eje k a la derecha
+  const base = 858, Kx = k => 1150 + k * 46;
+  const ejeK = new Axes(g, { x0: 1130, x1: 1770, y0: 300, y1: base, xr: [-0.43, 13.5], yr: [0, 1], xlabel: 'k' });
+  ejeK.ay.g.style.display = ejeK.hy.style.display = 'none';
+  const H = 470;
+  const comp = comps.map((c, i) => {
+    const desde = onda(c, filas[i]);
+    const pico = desde.map((_, j) => [Kx(c.k), base - H * c.a * j / (n - 1)]);
+    return {
+      c, desde, pico,
+      azul: new Curve(g, desde, { color: 'x', width: 4.5 }),     // se queda a la izquierda
+      mov: new Curve(g, desde, { color: 'x', width: 4.5 }),      // la copia que viaja…
+      nar: new Curve(g, desde, { color: 'k', width: 6 }),        // …y se vuelve pico
+      signo: new Tex(g, i ? '+' : '=', { size: 46, x: 118, y: filas[i] + 14, anchor: 'middle' }),
+      punto: (() => { const d = E('circle', { cx: Kx(c.k), cy: base - H * c.a, r: 9 }, g); d.style.fill = C('k'); return d; })(),
+      kl: new Tex(g, String(c.k), { size: 36, x: Kx(c.k), y: base + 46, anchor: 'middle', color: 'k' }),
+    };
+  });
+  const fhat = new Tex(g, '\\hat f(k)', { size: 44, x: 1150, y: 300, color: 'k' });
+  const aF = new Arrow(g, 830, 610, 1090, 610), tp1 = tapa(g, 960, 574, 60, 54);
+  const aFl = new Tex(g, '\\F', { size: 52, x: 960, y: 585, anchor: 'middle' });
+  const aFi = new Arrow(g, 1090, 720, 830, 720), tp2 = tapa(g, 960, 688, 80, 54);
+  const aFil = new Tex(g, '\\F^{-1}', { size: 52, x: 960, y: 700, anchor: 'middle' });
+  const formula = new Tex(g, '\\class{cx}{f(x)} \\;=\\; \\sum_k \\class{ck}{\\hat f(k)}\\, e^{ikx}', { size: 52, x: 960, y: 985, anchor: 'middle' });
+  const nota = new Txt(g, 'la misma función, en otras coordenadas', { size: 36, x: 960, y: 1050, anchor: 'middle', italic: true, color: 'dim' });
+
+  return {
+    steps: [1.4, 1.5, 1.8, 2.8, 1.8],
+    render(t) {
+      titulo.write(P(t, 0, .9)); F.show(P(t, .2, 1.1));
+      // 1: f(x)
+      const t1 = 1.4; ejeF.create(P(t, t1, .6)); f.create(P(t, t1 + .1, 1.3)); fl.write(P(t, t1 + .6, .8));
+      // 2: se desarma en ondas; 3: cada onda viaja y se colapsa en un pico
+      const t2 = 2.9, t3 = 4.7;
+      ejeK.create(P(t, t3, .8)); aF.grow(P(t, t3, .7)); aFl.write(P(t, t3 + .2, .6));
+      tp1.style.opacity = t >= t3 + .2 ? 1 : 0;
+      comp.forEach((o, i) => {
+        const pa = P(t, t2 + i * .25, 1.1);                 // copia de f → onda i
+        const pb = P(t, t3 + .5 + i * .45, 1.3);            // onda i → pico
+        o.azul.set(lerpPts(fPts, o.desde, pa)).create(pa > 0 ? 1 : 0);
+        o.signo.write(P(t, t2 + .6 + i * .25, .5));
+        const viaja = lerpPts(o.desde, o.pico, pb);
+        o.mov.set(viaja).create(pb > 0 ? 1 : 0).alpha(1 - pb);
+        o.nar.set(viaja).create(pb > 0 ? 1 : 0).alpha(pb);
+        o.punto.style.opacity = P(t, t3 + 1.5 + i * .45, .3);
+        o.kl.write(P(t, t3 + 1.5 + i * .45, .5));
+      });
+      fhat.write(P(t, t3 + 2.2, .6));
+      // 4: vuelta
+      const t4 = 7.5;
+      aFi.grow(P(t, t4, .7)); aFil.write(P(t, t4 + .2, .6)); tp2.style.opacity = t >= t4 + .2 ? 1 : 0;
+      formula.write(P(t, t4 + .5, 1.2)); nota.write(P(t, t4 + 1.1, .7));
+    },
+  };
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   0.3  La receta: ir, multiplicar, volver.
+   ════════════════════════════════════════════════════════════════════════════ */
+slide('receta', g => {
+  const titulo = new Txt(g, 'La receta', { size: 54, x: 70, y: 80 });
+  const F = marco(g);
+  const A = flechas(g);
+  const [cx1, cy1] = MID(BOX.TL), [cx2] = MID(BOX.TR), [, cy2] = MID(BOX.BL);
+  const f = new Tex(g, '\\class{cx}{f(x)}', { size: 72, x: cx1, y: cy1 + 20, anchor: 'middle' });
+  const fh = new Tex(g, '\\class{ck}{\\hat f(k)}', { size: 72, x: cx2, y: cy1 + 20, anchor: 'middle' });
+  const hf = new Tex(g, '\\class{ch}{H(k)}\\,\\class{ck}{\\hat f(k)}', { size: 72, x: cx2, y: cy2 + 20, anchor: 'middle' });
+  const gx = new Tex(g, '\\class{cx}{g(x)}', { size: 72, x: cx1, y: cy2 + 20, anchor: 'middle' });
+  const lq = new Txt(g, 'lo que queremos', { size: 30, x: 444, y: 604, anchor: 'end', italic: true, color: 'dim' });
+  const r1 = new Mix(g, 'por ejemplo,   $\\dfrac{d}{dx}\\,e^{ikx} \\;=\\; \\class{ch}{ik}\\; e^{ikx}$', { size: 44, x: 960, y: 990, anchor: 'middle' });
+  const r2 = new Mix(g, 'las ondas $e^{ikx}$ son autofunciones de la derivada: derivarlas es multiplicarlas por $ik$', { size: 34, x: 960, y: 1055, anchor: 'middle', italic: true, color: 'dim' });
+  return {
+    steps: [1.2, 1.6, 1.5, 1.5, 1.2, 2.0],
+    render(t) {
+      titulo.write(P(t, 0, .8)); F.show(t > 0 ? 1 : 0);
+      f.write(P(t, .3, .9));
+      const t1 = 1.2; A.F.grow(P(t, t1, .7)); A.Fl.write(P(t, t1 + .3, .5)); fh.write(P(t, t1 + .6, .9));
+      const t2 = 2.8; A.H.grow(P(t, t2, .6)); A.Hl.write(P(t, t2 + .2, .6)); hf.write(P(t, t2 + .5, 1));
+      const t3 = 4.3; A.Fi.grow(P(t, t3, .7)); A.Fil.write(P(t, t3 + .3, .5)); gx.write(P(t, t3 + .6, .9));
+      const t4 = 5.8; A.L.grow(P(t, t4, .7)); A.Ll.write(P(t, t4 + .3, .5)); lq.write(P(t, t4 + .5, .6));
+      const t5 = 7.0; r1.write(P(t, t5, 1)); r2.write(P(t, t5 + .8, .9));
+      A.tapas();
+    },
+  };
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   0.4  ¿Cuánto cuesta ir y volver? N² contra N log N, y un poco de historia.
+   ════════════════════════════════════════════════════════════════════════════ */
+slide('fft', g => {
+  const titulo = new Txt(g, '¿Cuánto cuesta ir y volver?', { size: 54, x: 70, y: 80 });
+  const N = 60 * 44100, cD = N * N, cF = N * Math.log2(N), VEL = 1e9;   // cuentas por segundo
+  const audio = new Mix(g, `un audio de un minuto: $N = 60 \\times 44.100 \\approx ${fmt(N / 1e6, 1).replace(',', '{,}')} \\cdot 10^6$ muestras`, { size: 40, x: 960, y: 190, anchor: 'middle' });
+  const X0 = 560, X1 = 1700, Y1 = 290, Y2 = 420, ALTO = 56;
+  const barra = (y, col) => { const r = E('rect', { x: X0, y, height: ALTO, width: 0 }, g); r.style.fill = C(col); return r; };
+  const bD = barra(Y1, 'dim'), bF = barra(Y2, 'h');
+  const lD = new Mix(g, 'directa:  $N^2$', { size: 40, x: X0 - 30, y: Y1 + 40, anchor: 'end' });
+  const lF = new Mix(g, 'FFT:  $N \\log_2 N$', { size: 40, x: X0 - 30, y: Y2 + 40, anchor: 'end', color: 'h' });
+  const exp10 = v => { const e = Math.floor(Math.log10(v)); return `${fmt(v / 10 ** e, 0)} \\cdot 10^{${e}}`; };
+  const nD = new Mix(g, `$${exp10(cD)}$ cuentas`, { size: 34, x: X0, y: Y1 + ALTO + 38, color: 'dim' });
+  const nF = new Mix(g, `$${exp10(cF)}$ cuentas  →  ${fmt(cF / VEL, 2)} segundos`, { size: 34, x: X0 + 30, y: Y2 + 40, color: 'h' });
+  const reloj = new Txt(g, '', { size: 40, x: X1, y: Y1 + ALTO + 42, anchor: 'end' });
+  const vel = new Mix(g, '(a $10^9$ cuentas por segundo)', { size: 28, x: X1, y: Y2 + ALTO + 50, anchor: 'end', italic: true, color: 'dim' });
+  // línea de tiempo
+  const YL = 760, AX = a => lerp(200, 1720, (a - 1800) / 170);
+  const linea = new Arrow(g, 170, YL, 1760, YL, { color: 'ax', width: 3, head: 18 });
+  const hito = (a, col) => { const c = E('circle', { cx: AX(a), cy: YL, r: 10 }, g); c.style.fill = C(col); return c; };
+  const anios = [1800, 1850, 1900, 1950].map(a => new Txt(g, String(a), { size: 26, x: AX(a), y: YL + 34, anchor: 'middle', color: 'dim' }));
+  const hG = hito(1805, 'x'), hFo = hito(1807, 'k'), hC = hito(1965, 'h');
+  const gauss = [new Txt(g, 'Gauss, 1805', { size: 36, x: AX(1805) - 20, y: YL - 92, bold: true }),
+    new Txt(g, 'interpola órbitas de asteroides a mano;', { size: 30, x: AX(1805) - 20, y: YL - 54, italic: true, color: 'dim' }),
+    new Txt(g, 'no lo publica (sale en 1866)', { size: 30, x: AX(1805) - 20, y: YL - 20, italic: true, color: 'dim' })];
+  const fourier = new Txt(g, 'Fourier presenta sus series, 1807', { size: 30, x: AX(1805) - 20, y: YL + 74, italic: true, color: 'k' });
+  const cooley = [new Txt(g, 'Cooley y Tukey, 1965', { size: 36, x: AX(1965) + 20, y: YL - 92, anchor: 'end', bold: true }),
+    new Txt(g, 'Guerra Fría: detectar ensayos nucleares subterráneos', { size: 30, x: AX(1965) + 20, y: YL - 54, anchor: 'end', italic: true, color: 'dim' }),
+    new Txt(g, 'con sismógrafos, sin entrar a la URSS', { size: 30, x: AX(1965) + 20, y: YL - 20, anchor: 'end', italic: true, color: 'dim' })];
+  const ley = leyendas(g, [['la FFT no es una aproximación: da exactamente lo mismo, con muchísimas menos cuentas', 3.2]], { size: 36 });
+  const T1 = 3.0, T2 = 4.8;
+  return {
+    steps: [3.0, 1.8, 2.2],
+    render(t) {
+      titulo.write(P(t, 0, .8)); audio.write(P(t, .2, .8));
+      lD.write(P(t, .5, .5)); lF.write(P(t, .6, .5));
+      // la directa tarda (la barra crece con un reloj); la FFT es instantánea
+      const pD = lin(t, .9, 2.0);
+      bD.setAttribute('width', (X1 - X0) * pD);
+      bF.setAttribute('width', t > 1.0 ? Math.max(4, (X1 - X0) * cF / cD) : 0);
+      const s = Math.round(pD * cD / VEL);
+      reloj.t.textContent = pD > 0 ? `${Math.floor(s / 3600)} h ${String(Math.floor(s / 60) % 60).padStart(2, '0')} min` : '';
+      nD.write(P(t, 2.7, .3)); nF.write(P(t, 1.1, .5)); vel.write(P(t, 1.4, .5));
+      // 1: Gauss · 2: Cooley y Tukey
+      linea.grow(P(t, T1, .6)); anios.forEach((a, i) => a.write(P(t, T1 + .2 + i * .1, .4)));
+      hG.style.opacity = P(t, T1 + .4, .3); gauss.forEach((o, i) => o.write(P(t, T1 + .5 + i * .3, .6)));
+      hFo.style.opacity = P(t, T1 + 1.2, .3); fourier.write(P(t, T1 + 1.2, .6));
+      hC.style.opacity = P(t, T2, .3); cooley.forEach((o, i) => o.write(P(t, T2 + .1 + i * .4, .7)));
+      ley(t);
+    },
+  };
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   A1  Derivar: H(k) = ik. Con ruido, ik levanta el piso de las k altas.
+   ════════════════════════════════════════════════════════════════════════════ */
+slide('derivar', g => {
+  // datos: N = 128 puntos en [0, 2π)
+  const N = 128, K = N / 2, KC = 10, SIG = .09;
+  const xs = Array.from({ length: N + 1 }, (_, j) => 2 * Math.PI * j / N);
+  const r = rng(7), ruido = Array.from({ length: N }, () => SIG * gauss(r));
+  const f0 = xs.slice(0, N).map(x => Math.sin(3 * x) + .5 * Math.cos(7 * x));
+  const fn = f0.map((v, j) => v + ruido[j]);
+  const dft = v => {   // c_k = (1/N) Σ v_j e^{-ikx_j}, k = 0..K
+    const a = [], b = [];
+    for (let k = 0; k <= K; k++) { let re = 0, im = 0; for (let j = 0; j < N; j++) { re += v[j] * Math.cos(k * xs[j]); im -= v[j] * Math.sin(k * xs[j]); } a.push(re / N); b.push(im / N); }
+    return { a, b, mod: a.map((ak, k) => Math.hypot(ak, b[k])) };
+  };
+  const deriv = (c, kc) => xs.map(x => { let s = 0; for (let k = 1; k < Math.min(K, kc + 1); k++) s += 2 * (-k * c.b[k] * Math.cos(k * x) - k * c.a[k] * Math.sin(k * x)); return s; });
+  const c0 = dft(f0), cn = dft(fn), ks = Array.from({ length: K + 1 }, (_, k) => k);
+  const per = v => [...v, v[0]];
+
+  const titulo = new Mix(g, '1  ·  Derivar', { size: 54, x: 70, y: 80 });
+  const F = marco(g), A = flechas(g, 'ik');
+  const Hc = new Tex(g, '\\times\\, ik\\,\\Theta(k_c-|k|)', { size: 46, x: 1478, y: 564, color: 'h' });
+  const ddx = new Tex(g, '\\frac{d}{dx}', { size: 44, x: 444, y: 564, anchor: 'end', color: 'dim' });
+  const clip = E('clipPath', { id: 'clipBL' }, g); E('rect', { x: 120, y: 638, width: 720, height: 250 }, clip);
+  const aTL = new Axes(g, { ...BOX.TL, xr: [0, 2 * Math.PI], yr: [-2.2, 2.2], base: 0, xlabel: 'x' });
+  const aTR = new Axes(g, { ...BOX.TR, xr: [-1, K], yr: [-3, 1], log: true, xlabel: 'k' });
+  const aBR = new Axes(g, { ...BOX.BR, xr: [-1, K], yr: [-3, 1], log: true, xlabel: 'k' });
+  const aBL = new Axes(g, { ...BOX.BL, xr: [0, 2 * Math.PI], yr: [-9, 9], base: 0, xlabel: 'x' });
+  const lTL = rotulo(g, 'f(x)', BOX.TL, 'x'), lTR = rotulo(g, '|\\hat f(k)|', BOX.TR, 'k');
+  const lBR = rotulo(g, '|ik\\,\\hat f(k)|', BOX.BR, 'k'), lBL = rotulo(g, "f'(x)", BOX.BL, 'x');
+  const escLog = [BOX.TR, BOX.BR].map(b => new Txt(g, '(escala log)', { size: 26, x: b.x1, y: b.y0 - 8, anchor: 'end', italic: true, color: 'dim' }));
+  // curvas y espectros
+  const pf0 = aTL.pts(xs, per(f0)), pfn = aTL.pts(xs, per(fn));
+  const ps0 = aTR.pts(ks, c0.mod), psn = aTR.pts(ks, cn.mod);
+  const pk0 = aBR.pts(ks, c0.mod.map((m, k) => k * m)), pkn = aBR.pts(ks, cn.mod.map((m, k) => k * m)), pkc = aBR.pts(ks, cn.mod.map((m, k) => k <= KC ? k * m : 0));
+  const pd0 = aBL.pts(xs, deriv(c0, K)), pdn = aBL.pts(xs, deriv(cn, K)), pdc = aBL.pts(xs, deriv(cn, KC));
+  const compuerta = E('rect', { x: aBR.X(-1), y: BOX.BR.y0 + 20, width: aBR.X(KC + .5) - aBR.X(-1), height: BOX.BR.y1 - BOX.BR.y0 - 20 }, g);
+  compuerta.style.fill = C('h');
+  const corte = new Curve(g, [[aBR.X(KC + .5), BOX.BR.y0 + 20], [aBR.X(KC + .5), BOX.BR.y1]], { color: 'h', width: 3.5 });
+  const kcl = new Tex(g, 'k_c', { size: 38, x: aBR.X(KC + .5), y: BOX.BR.y1 + 42, anchor: 'middle', color: 'h' });
+  const exacta = new Curve(g, pd0, { color: 'dim', width: 3, dash: '10 9', clip: 'clipBL' });
+  const cf = new Curve(g, pf0);
+  const cs = new Stems(g, aTR.yb, { r: 4.5, width: 3 }), ck = new Stems(g, aBR.yb, { r: 4.5, width: 3 });
+  const cd = new Curve(g, pd0, { clip: 'clipBL' });
+  const nRuido = new Mix(g, '+ ruido, $\\sigma = 0{,}09$', { size: 32, x: 790, y: 226, anchor: 'end', color: 'ruido' });
+  const nPiso = new Txt(g, 'piso de ruido', { size: 32, x: 1770, y: aTR.Y(.035), anchor: 'end', color: 'ruido', italic: true });
+  const ley = leyendas(g, [
+    ['$\\widehat{f\'}(k) = \\class{ch}{ik}\\,\\hat f(k)$   — ya lo vieron en la teórica', 3.8, 4.8],
+    ['un ruido que casi no se ve…', 5.0, 6.6],
+    ['$|\\class{ch}{H(k)}| = |k|$  amplifica justo donde vive el ruido', 6.9, 8.6],
+    ['cortar en $k_c$: perdemos detalle fino, recuperamos la derivada', 9.4],
+  ]);
+  return {
+    steps: [1.6, 3.2, 1.8, 2.0, 2.2],
+    render(t) {
+      titulo.write(P(t, 0, .8)); F.show(t > 0 ? 1 : 0);
+      // 0: f(x)
+      aTL.create(P(t, .1, .7)); cf.create(P(t, .4, 1.1)); lTL.write(P(t, .6, .7));
+      // 1: toda la cadena limpia
+      const t1 = 1.6;
+      A.F.grow(P(t, t1, .5)); A.Fl.write(P(t, t1 + .1, .4));
+      aTR.create(P(t, t1 + .2, .5)); lTR.write(P(t, t1 + .4, .5));
+      A.H.grow(P(t, t1 + 1, .4)); A.Hl.write(P(t, t1 + 1.1, .5)); aBR.create(P(t, t1 + 1, .5)); lBR.write(P(t, t1 + 1.9, .5));
+      A.Fi.grow(P(t, t1 + 2, .5)); A.Fil.write(P(t, t1 + 2.1, .4));
+      aBL.create(P(t, t1 + 2.1, .5)); lBL.write(P(t, t1 + 2.3, .5));
+      A.L.grow(P(t, t1 + 2.4, .5)); ddx.write(P(t, t1 + 2.6, .5)); A.Ll.g.style.display = 'none';
+      escLog.forEach(e => e.write(P(t, t1 + 2.4, .6)));
+      // 2: ruido · 3: ×ik con ruido · 4: compuerta
+      const t2 = 4.8, t3 = 6.6, t4 = 8.6;
+      const pr = P(t, t2, 1.2), pk = P(t, t3, 1.4), pc = P(t, t4 + .3, 1.2);
+      cf.set(lerpPts(pf0, pfn, pr)); nRuido.write(P(t, t2 + .2, .8));
+      cs.set(lerpPts(ps0, psn, pr), P(t, t1 + .3, .9)); nPiso.write(P(t, t2 + .8, .7));
+      const pBaja = P(t, t1 + 1.1, .9);     // la copia del espectro baja y se multiplica por |k|
+      if (pc > 0) ck.set(lerpPts(pkn, pkc, pc));
+      else if (pk > 0) ck.set(lerpPts(pk0, pkn, pk));
+      else ck.set(lerpPts(ps0, pk0, pBaja), pBaja > 0 ? 1 : 0, lerp(aTR.yb, aBR.yb, pBaja));
+      cd.set(pc > 0 ? lerpPts(pdn, pdc, pc) : lerpPts(pd0, pdn, pk)).create(P(t, t1 + 2.3, .9));
+      const viejo = 1 - .78 * P(t, t2, .6) * (1 - P(t, t3, .4));   // abajo queda "viejo" hasta recalcular
+      ck.alpha(viejo); cd.alpha(viejo);
+      compuerta.style.opacity = .13 * P(t, t4, .6); corte.create(P(t, t4, .6)); kcl.write(P(t, t4 + .2, .5));
+      A.Hl.alpha(1 - P(t, t4, .5)); Hc.write(P(t, t4 + .2, .8));
+      exacta.create(.8 * P(t, t4 + 1.2, .8));
+      ley(t); A.tapas();
+    },
+  };
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   A2  Filtrar por umbral: un arpegio de piano real con ruido.
+   ════════════════════════════════════════════════════════════════════════════ */
+slide('umbral', g => {
+  const D = window.DATOS?.piano; if (!D) return sinDatos(g);
+  const titulo = new Mix(g, '2  ·  Filtrar por umbral', { size: 54, x: 70, y: 80 });
+  const F = marco(g, { izq: 'tiempo  ·  $t$', der: 'frecuencias  ·  $f$' });
+  const A = flechas(g, '\\Theta\\big(|\\hat f|^2-\\tau\\big)');
+  const limpiar = new Txt(g, 'limpiar', { size: 34, x: 444, y: 562, anchor: 'end', italic: true, color: 'dim' });
+  A.Ll.g.style.display = 'none';
+  const kHz = [1, 2, 3, 4].map(v => [v * 1000, String(v)]);
+  // a la izquierda, arriba una tira con la señal entera y abajo un zoom de 25 ms (con lupa)
+  const amp = 1.1 * Math.max(...D.zoom.ruidosa.map(Math.abs));
+  const zTL = { ...BOX.TL, y0: BOX.TL.y0 + 86 }, zBL = { ...BOX.BL, y0: BOX.BL.y0 + 86 };
+  const aTL = new Axes(g, { ...zTL, xr: [0, D.zoom.ms], yr: [-amp, amp], base: 0, xlabel: 't' });
+  const aBL = new Axes(g, { ...zBL, xr: [0, D.zoom.ms], yr: [-amp, amp], base: 0, xlabel: 't' });
+  [aTL, aBL].forEach(a => a.ay.g.style.display = a.hy.style.display = 'none');
+  const lupa = (b, z, nombres) => {
+    const yc = b.y0 + 34, h = 22, X = u => lerp(b.x0, b.x1, u);
+    const onda = E('path', {}, g); onda.style.fill = C('x');
+    const xa = X(D.zoom.t0 / D.zoom.dur), xb = Math.max(xa + 7, X((D.zoom.t0 + D.zoom.ms / 1000) / D.zoom.dur));
+    const marca = E('rect', { x: xa - 2, y: yc - h - 6, width: xb - xa + 4, height: 2 * h + 12, fill: 'none' }, g);
+    Object.assign(marca.style, { stroke: C('ax'), strokeWidth: 2.5 });
+    const abanico = new Curve(g, null, { color: 'tenue', width: 2, dash: '6 6' });
+    abanico.set([[xa - 2, yc + h + 6], [z.x0, z.y0 - 4]]);
+    const abanico2 = new Curve(g, [[xb + 2, yc + h + 6], [z.x1, z.y0 - 4]], { color: 'tenue', width: 2, dash: '6 6' });
+    const etiqueta = new Txt(g, 'zoom de 25 ms', { size: 24, x: z.x1, y: z.y1 + 30, anchor: 'end', italic: true, color: 'dim' });
+    new Cabezal(g, nombres, b.x0, b.x1, yc - h - 8, yc + h + 8, D.zoom.dur);
+    return {
+      set(env, p = 1) {   // env = {min, max}; p = cuánto de la tira se ve (de izquierda a derecha)
+        const n = env.max.length, m = Math.max(2, Math.round(n * p));
+        const arriba = env.max.slice(0, m).map((v, i) => [X(i / (n - 1)), yc - h * v / 1]);
+        const abajo = env.min.slice(0, m).map((v, i) => [X(i / (n - 1)), yc - h * v]).reverse();
+        onda.setAttribute('d', pathD([...arriba, ...abajo]) + 'Z'); onda.style.opacity = p > 0 ? 1 : 0;
+      },
+      detalle(p) { marca.style.opacity = p; abanico.alpha(p); abanico2.alpha(p); etiqueta.write(p); },
+    };
+  };
+  const mezcla = (A, B, p) => ({ min: A.min.map((v, i) => lerp(v, B.min[i], p)), max: A.max.map((v, i) => lerp(v, B.max[i], p)) });
+  const tF = lupa(BOX.TL, zTL, ['piano', 'piano_ruidosa']), tG = lupa(BOX.BL, zBL, ['piano_filtrada']);
+  const aTR = new Axes(g, { ...BOX.TR, xr: [0, D.fmax], yr: [D.piso_db, 0], xlabel: 'f', xticks: kHz });
+  const aBR = new Axes(g, { ...BOX.BR, xr: [0, D.fmax], yr: [D.piso_db, 0], xlabel: 'f', xticks: kHz });
+  const khzL = [aTR, aBR].map(a => new Txt(g, 'kHz', { size: 26, x: a.x1 - 30, y: a.yb + 38, color: 'dim', italic: true }));
+  const lTL = rotulo(g, 'f(t)', BOX.TL, 'x'), lBL = rotulo(g, 'g(t)', BOX.BL, 'x');
+  const lTR = rotulo(g, '|\\hat f(f)|^2', BOX.TR, 'k'), lBR = rotulo(g, '|\\hat g(f)|^2', BOX.BR, 'k');
+  const dB = [BOX.TR, BOX.BR].map(b => new Txt(g, '(dB)', { size: 26, x: b.x1, y: b.y0 - 8, anchor: 'end', italic: true, color: 'dim' }));
+  const zx = D.zoom.limpia.map((_, i) => i * D.zoom.ms / (D.zoom.limpia.length - 1));
+  const pLimpia = aTL.pts(zx, D.zoom.limpia), pRuidosa = aTL.pts(zx, D.zoom.ruidosa);
+  const pFiltrada = aBL.pts(zx, D.zoom.filtrada), pRef = aBL.pts(zx, D.zoom.limpia);
+  const cf = new Curve(g, pLimpia, { width: 3.5 });
+  const ref = new Curve(g, pRef, { color: 'dim', width: 2.5, dash: '8 8' });
+  const cg = new Curve(g, pFiltrada, { width: 3.5 });
+  const fx = i => (i + .5) * D.fmax / D.espectro_ruidosa.length;
+  const topsTR = D.espectro_ruidosa.map((v, i) => [aTR.X(fx(i)), aTR.Y(v)]);
+  // columnas que sobreviven al umbral; las vecinas se juntan en un solo palito (el más alto)
+  const quedan = [];
+  D.espectro_filtrada.forEach((v, i) => {
+    if (v <= -99) return;
+    const u = quedan.at(-1);
+    if (u && i - u[1] <= 3) { if (v > u[0]) quedan[quedan.length - 1] = [v, i]; } else quedan.push([v, i]);
+  });
+  const topsK = quedan.map(([v, i]) => [aTR.X(fx(i)), aTR.Y(v)]), topsBR = quedan.map(([v, i]) => [aBR.X(fx(i)), aBR.Y(v)]);
+  const sTR = new Stems(g, aTR.yb, { r: 0, width: 1.6 });
+  const sK = new Stems(g, aTR.yb, { r: 6, width: 3.5 }), sBR = new Stems(g, aBR.yb, { r: 6, width: 3.5 });
+  const yU = aTR.Y(D.umbral_db);
+  const umbral = new Curve(g, [[aTR.x0, yU], [aTR.x1 + 10, yU]], { color: 'h', width: 3.5, dash: '14 9' });
+  const tau = new Tex(g, '\\tau', { size: 42, x: aTR.x1 + 22, y: yU + 12, color: 'h' });
+  const nArm = new Txt(g, 'armónicos', { size: 32, x: aTR.X(3000), y: aTR.Y(-5), italic: true, color: 'k' });
+  const nPiso = new Txt(g, 'piso de ruido', { size: 32, x: aTR.x1, y: aTR.Y(-27), anchor: 'end', italic: true, color: 'ruido' });
+  const nRuido = new Txt(g, '+ ruido blanco', { size: 32, x: 790, y: 226, anchor: 'end', color: 'ruido' });
+  const parF = new Parlante(g, BOX.TL.x0 + 115, BOX.TL.y0 - 22, () => estado.t >= 2.2 ? 'piano_ruidosa' : 'piano');
+  const parG = new Parlante(g, BOX.BL.x0 + 115, BOX.BL.y0 - 22, 'piano_filtrada');
+  const pct = fmt(D.fraccion * 100, 2);
+  const ley = leyendas(g, [
+    ['un arpegio de Do mayor en piano', .2, 2.2],
+    ['le sumamos ruido blanco', 2.4, 3.6],
+    ['el acorde vive en unos pocos armónicos; el ruido, en todas las frecuencias', 4.6, 6.0],
+    [`$\\class{ch}{\\Theta(|\\hat f|^2-\\tau)}$: nos quedamos con el ${pct} % de los coeficientes`, 6.6, 8.4],
+    ['antitransformamos: el arpegio vuelve, casi sin ruido', 8.8, 10.2],
+    ['ojo: este $\\class{ch}{H}$ depende de $\\hat f$  —  ya no es una multiplicación fija', 10.3],
+  ]);
+  const estado = { t: 0 };
+  return {
+    steps: [1.2, 1.0, 1.4, 2.4, 2.4, 1.8, 1.2],
+    audio: { 1: 'piano', 2: 'piano_ruidosa', 5: 'piano_filtrada' },
+    render(t) {
+      estado.t = t;
+      titulo.write(P(t, 0, .8)); F.show(t > 0 ? 1 : 0);
+      lTL.write(P(t, 0, .6)); parF.alpha(P(t, .3, .4));
+      const t1 = 2.2, pRu = P(t, t1, 1);    // 1: ruido
+      tF.set(mezcla(D.tira.limpia, D.tira.ruidosa, pRu), P(t, .1, .7)); tF.detalle(P(t, .6, .4));
+      aTL.create(P(t, .6, .5)); cf.create(P(t, .7, .6));
+      cf.set(lerpPts(pLimpia, pRuidosa, pRu)); nRuido.write(P(t, t1 + .2, .7));
+      // 2: espectro
+      const t2 = 3.6;
+      A.F.grow(P(t, t2, .5)); A.Fl.write(P(t, t2 + .1, .4)); aTR.create(P(t, t2 + .2, .5)); lTR.write(P(t, t2 + .4, .5));
+      khzL[0].write(P(t, t2 + .4, .4)); dB[0].write(P(t, t2 + .4, .4));
+      const pT = P(t, t2 + .4, 1.4); sTR.set(topsTR, pT);
+      nArm.write(P(t, t2 + 1.4, .6)); nPiso.write(P(t, t2 + 1.6, .6)); nPiso.alpha(1 - P(t, 6, .4));
+      // 3: umbral → nos quedamos con los picos
+      const t3 = 6.0;
+      umbral.create(P(t, t3, .5)); tau.write(P(t, t3 + .2, .5));
+      sTR.alpha(1 - .72 * P(t, t3 + .4, .6)); sK.set(topsK, P(t, t3 + .4, .01));
+      A.H.grow(P(t, t3 + .6, .4)); A.Hl.write(P(t, t3 + .7, .6));
+      aBR.create(P(t, t3 + .7, .5)); lBR.write(P(t, t3 + 1.6, .5)); khzL[1].write(P(t, t3 + 1, .4)); dB[1].write(P(t, t3 + 1, .4));
+      const pb = P(t, t3 + .9, 1.1);
+      sBR.set(lerpPts(topsK, topsBR, pb), pb > 0 ? 1 : 0, lerp(aTR.yb, aBR.yb, pb));
+      // 4: vuelta
+      const t4 = 8.4;
+      A.Fi.grow(P(t, t4, .5)); A.Fil.write(P(t, t4 + .1, .4));
+      tG.set(D.tira.filtrada, P(t, t4 + .2, .6)); tG.detalle(P(t, t4 + .6, .3));
+      aBL.create(P(t, t4 + .6, .5)); cg.create(P(t, t4 + .7, .7)); lBL.write(P(t, t4 + .2, .5)); parG.alpha(P(t, t4 + .5, .4));
+      ref.create(.7 * P(t, t4 + 1.1, .6));
+      A.L.grow(P(t, t4 + .8, .5)); limpiar.write(P(t, t4 + 1, .5));
+      ley(t); A.tapas();
+    },
+  };
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   A2'  ¿Por qué anda? Más muestras: los picos crecen como √N y el piso no.
+   ════════════════════════════════════════════════════════════════════════════ */
+slide('por-que', g => {
+  const titulo = new Txt(g, '¿Por qué anda?', { size: 54, x: 70, y: 80 });
+  const F = marco(g, { izq: 'tiempo  ·  $n$', der: 'frecuencias  ·  $k$' });
+  // tres filas a cada lado: señal + ruido = suma. Los espectros van divididos por √N.
+  const FILAS = [300, 545, 790], ALTO = 78, ESC = 14.5, TAU = 3.6;
+  const r = rng(11), ruido = Array.from({ length: 1024 }, () => gauss(r));
+  const senal = n => .6 * Math.sin(2 * Math.PI * n / 8) + .45 * Math.sin(2 * Math.PI * 7 * n / 32 + 1);
+  const xL = u => lerp(160, 790, u), xR = u => lerp(1140, 1770, u);   // u en [0, 1]
+  const ejes = FILAS.map(y => [
+    new Curve(g, [[150, y], [800, y]], { color: 'tenue', width: 2 }),
+    new Curve(g, [[1130, y + ALTO], [1780, y + ALTO]], { color: 'ax', width: 2.5 }),
+  ]);
+  const signos = [null, '+', '='].map((sg, i) => sg && [118, 1100].map(x => new Tex(g, sg, { size: 46, x, y: FILAS[i] + 14, anchor: 'middle' })));
+  const rot = [
+    [new Tex(g, 's_n', { size: 38, x: 160, y: FILAS[0] - ALTO - 6, color: 'x' }), new Tex(g, '|\\hat s(k)|', { size: 36, x: 1150, y: FILAS[0] - ALTO + 2, color: 'k' })],
+    [new Tex(g, '\\eta_n', { size: 38, x: 160, y: FILAS[1] - ALTO - 6, color: 'ruido' }), new Tex(g, '|\\hat \\eta(k)|', { size: 36, x: 1150, y: FILAS[1] - ALTO + 2, color: 'ruido' })],
+    [new Tex(g, 'f_n = s_n + \\eta_n', { size: 38, x: 160, y: FILAS[2] - ALTO - 6, color: 'x' }), new Tex(g, '|\\hat f(k)| = |\\hat s + \\hat\\eta|', { size: 36, x: 1150, y: FILAS[2] - ALTO + 2, color: 'k' })],
+  ];
+  const nota = new Mix(g, '(divididos por $\\sqrt{N}$)', { size: 26, x: 1780, y: FILAS[0] - ALTO + 2, anchor: 'end', italic: true, color: 'dim' });
+  const flechas = FILAS.map(y => new Arrow(g, 830, y, 1070, y, { width: 3.5, head: 18 }));
+  const tapas = FILAS.map(y => tapa(g, 950, y - 28, 50, 44));
+  const efes = FILAS.map(y => new Tex(g, '\\F', { size: 42, x: 950, y: y - 16, anchor: 'middle' }));
+  // en el tiempo: tres curvas con las 1024 muestras; se dibujan las primeras `largo`, con `escala` muestras a lo ancho.
+  // Más N = grabar más tiempo con el mismo muestreo: primero se agrega (o se corta) señal y después se acomoda la escala.
+  const S1024 = Array.from({ length: 1024 }, (_, n) => senal(n));
+  const datos = [S1024, ruido, S1024.map((v, n) => v + ruido[n])];
+  const curvas = datos.map((_, i) => new Curve(g, null, { color: i === 1 ? 'ruido' : 'x', width: 3 }));
+  const cpT = E('clipPath', { id: 'clipPorQue' }, g); E('rect', { x: 140, y: 150, width: 670, height: 760 }, cpT);
+  curvas.forEach(c => c.g.setAttribute('clip-path', 'url(#clipPorQue)'));
+  function dibujarTiempo(escala, largo, p0) {
+    const nL = Math.max(2, Math.floor(largo)), ancho = clamp(3.4 - .75 * Math.log2(escala / 64), 1.3, 3.4);
+    curvas.forEach((c, i) => {
+      c.set(datos[i].slice(0, nL).map((y, n) => [160 + n * 630 / (escala - 1), FILAS[i] - y * 26])).create(p0[i]);
+      c.p.style.strokeWidth = ancho + (i === 0 ? .6 : 0);
+    });
+  }
+  const etiquetaN = new Txt(g, '', { size: 38, x: 790, y: FILAS[0] - ALTO - 6, anchor: 'end', color: 'x' });
+  const notaRuido = new Txt(g, 'ruido blanco: cada muestra al azar, independiente', { size: 24, x: 790, y: FILAS[1] - ALTO - 6, anchor: 'end', italic: true, color: 'ruido' });
+  // un juego de espectros por cada N
+  const juego = N => {
+    const s_ = S1024.slice(0, N), e_ = ruido.slice(0, N), f_ = s_.map((v, n) => v + e_[n]);
+    const espectro = (v, i, col) => {
+      const m = modDFT(v).map(a => a / Math.sqrt(N));
+      const st = new Stems(g, FILAS[i] + ALTO, { r: N <= 64 ? 5 : N <= 256 ? 3 : 0, width: N <= 64 ? 3.5 : N <= 256 ? 2.4 : 1.4, color: col });
+      return { st, tops: m.map((a, k) => [xR(k / (N / 2)), FILAS[i] + ALTO - Math.min(a * ESC, 2 * ALTO + 20)]) };
+    };
+    return { N, espectros: [espectro(s_, 0, 'k'), espectro(e_, 1, 'ruido'), espectro(f_, 2, 'k')] };
+  };
+  const J = { 256: juego(256), 64: juego(64), 1024: juego(1024) };
+  const yT = FILAS[2] + ALTO - TAU * ESC;
+  const umbral = new Curve(g, [[1130, yT], [1790, yT]], { color: 'h', width: 3.5, dash: '14 9' });
+  const tau = new Tex(g, '\\tau', { size: 40, x: 1800, y: yT + 12, color: 'h' });
+  const nDos = new Txt(g, 'toda su energía en 2 frecuencias', { size: 28, x: 1780, y: FILAS[0] - 22, anchor: 'end', italic: true, color: 'k' });
+  const nTodas = new Txt(g, 'la suya, repartida: un poquito en cada una', { size: 28, x: 1780, y: FILAS[1] - 22, anchor: 'end', italic: true, color: 'ruido' });
+  const ley = leyendas(g, [
+    ['ruido blanco $\\eta_n$: un valor al azar en cada muestra, sin relación con los demás; sumado, tapa la señal', .4, 2.4],
+    ['$\\F(s + \\eta) = \\hat s + \\hat\\eta$: transformar es lineal, así que la suma se conserva', 3.0, 5.2],
+    ['Parseval: la energía se conserva; el seno la junta, el ruido la reparte entre todas las $k$', 5.6, 7.6],
+    ['grabando menos tiempo (menos muestras, mismo muestreo), los picos no sobresalen del piso', 8.2, 10.6],
+    ['grabando más tiempo, los picos crecen como $\\sqrt{N}$ y el piso de ruido no se mueve', 11.0, 13.8],
+    ['anda si la señal es rala y estacionaria, y el ruido es blanco (repartido en todas las $k$)', 14.4],
+  ], { size: 36 });
+  // tramos: 0 filas a la izquierda · 1 𝓕 · 2 Parseval · 3 N = 64 · 4 N = 1024 · 5 umbral
+  const T = [0, 2.4, 5.2, 7.6, 10.6, 13.8];
+  return {
+    steps: [2.4, 2.8, 2.4, 3.0, 3.2, 2.0],
+    render(t) {
+      titulo.write(P(t, 0, .8)); F.show(t > 0 ? 1 : 0);
+      ejes.forEach(([a, b], i) => { a.create(P(t, .1 + i * .3, .5)); b.create(P(t, T[1] + i * .3, .5)); });
+      signos.forEach((par, i) => par && (par[0].write(P(t, .3 + i * .5, .4)), par[1].write(P(t, T[1] + .6 + i * .5, .4))));
+      rot.forEach(([a, b], i) => { a.write(P(t, .2 + i * .5, .5)); b.write(P(t, T[1] + .3 + i * .5, .5)); });
+      nota.write(P(t, T[1] + 1.8, .5));
+      flechas.forEach((f, i) => f.grow(P(t, T[1] + i * .5, .5)));
+      efes.forEach((f, i) => f.write(P(t, T[1] + .2 + i * .5, .4)));
+      tapas.forEach((tp, i) => tp.style.opacity = t >= T[1] + .2 + i * .5 ? 1 : 0);
+      // N = 256 → 64 (se corta y después se estira) → 1024 (se achica la escala y después se graba más)
+      const lg = (a, b, p) => Math.exp(lerp(Math.log(a), Math.log(b), p));
+      const cut = P(t, T[3], .7), zin = P(t, T[3] + .8, .8), zout = P(t, T[4], .8), crece = P(t, T[4] + .9, 1.0);
+      const escala = lg(lg(256, 64, zin), 1024, zout), largo = lg(lg(256, 64, cut), 1024, crece);
+      dibujarTiempo(escala, largo, [0, 1, 2].map(i => P(t, .2 + i * .5, .9)));
+      etiquetaN.t.textContent = `N = ${Math.round(largo)}`; etiquetaN.write(P(t, .3, .6));
+      notaRuido.write(P(t, .9, .7));
+      // los espectros cambian cuando terminó el cambio en el tiempo
+      const a64 = P(t, T[3] + 1.6, .6), a1024 = P(t, T[4] + 2.0, .6);
+      const peso = { 256: 1 - a64, 64: a64 * (1 - a1024), 1024: a1024 };
+      for (const [N, j] of Object.entries(J)) {
+        const w = peso[N], entra = N === '256' ? 1 : 0;
+        j.espectros.forEach(({ st, tops }, i) => st.set(tops, entra ? P(t, T[1] + .2 + i * .5, .9) : 1).alpha(w));
+      }
+      nDos.write(P(t, T[2] + .2, .7)); nTodas.write(P(t, T[2] + .8, .7));
+      [nDos, nTodas].forEach(n => n.alpha(1 - P(t, T[3], .4)));
+      umbral.create(P(t, T[5], .6)); tau.write(P(t, T[5] + .2, .5));
+      ley(t);
+    },
+  };
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   Paréntesis: análisis de señales. Acá no operamos y volvemos: transformamos y miramos.
+   ════════════════════════════════════════════════════════════════════════════ */
+// Rótulo que marca las slides del paréntesis
+const rotuloParentesis = g => new Txt(g, '( paréntesis: análisis de señales )', { size: 32, x: 1850, y: 80, anchor: 'end', italic: true, color: 'dim' });
+
+slide('parentesis', g => {
+  const abre = new Txt(g, '(', { size: 560, x: 150, y: 760, color: 'tenue' });
+  const cierra = new Txt(g, ')', { size: 560, x: 1770, y: 760, anchor: 'end', color: 'tenue' });
+  const titulo = new Txt(g, 'Un paréntesis: análisis de señales', { size: 66, x: 960, y: 290, anchor: 'middle' });
+  // la receta en una línea: f → F → f̂ → ×H → H f̂ → F⁻¹ → g
+  const y = 560, sz = 58;
+  const f = new Tex(g, '\\class{cx}{f}', { size: sz, x: 540, y, anchor: 'middle' });
+  const a1 = new Arrow(g, 590, y - 18, 720, y - 18), l1 = new Tex(g, '\\F', { size: 44, x: 655, y: y - 42, anchor: 'middle' });
+  const fh = new Tex(g, '\\class{ck}{\\hat f}', { size: sz, x: 775, y, anchor: 'middle' });
+  const a2 = new Arrow(g, 830, y - 18, 990, y - 18, { color: 'h' }), l2 = new Tex(g, '\\times\\,H', { size: 44, x: 910, y: y - 42, anchor: 'middle', color: 'h' });
+  const hf = new Tex(g, '\\class{ch}{H}\\class{ck}{\\hat f}', { size: sz, x: 1065, y, anchor: 'middle' });
+  const a3 = new Arrow(g, 1140, y - 18, 1280, y - 18), l3 = new Tex(g, '\\F^{-1}', { size: 44, x: 1210, y: y - 42, anchor: 'middle' });
+  const gg = new Tex(g, '\\class{cx}{g}', { size: sz, x: 1335, y, anchor: 'middle' });
+  const resto = [a2, l2, hf, a3, l3, gg];
+  const hasta = new Txt(g, 'hasta acá: transformar, operar, antitransformar', { size: 38, x: 960, y: 450, anchor: 'middle', italic: true, color: 'dim' });
+  const baja = new Arrow(g, 775, y + 30, 775, y + 140, { color: 'k' });
+  const mirar = new Txt(g, 'mirar: ¿qué frecuencias hay? ¿cuándo?', { size: 40, x: 810, y: y + 108, color: 'k' });
+  const ley = leyendas(g, [['¿y si la señal no es estacionaria? (la voz, la música, una ballena…)', 3.6]], { size: 38, y: 900 });
+  return {
+    steps: [1.6, 2.0, 2.2],
+    render(t) {
+      abre.write(P(t, 0, 1)); cierra.write(P(t, .2, 1)); titulo.write(P(t, .3, 1.2));
+      // 1: la receta
+      const t1 = 1.6;
+      hasta.write(P(t, t1, .7));
+      [f, a1, l1, fh, a2, l2, hf, a3, l3, gg].forEach((o, i) => {
+        const p = P(t, t1 + .1 + i * .1, .5);
+        o.grow ? o.grow(p) : o.write(p);
+      });
+      // 2: no volvemos; sólo miramos
+      const t2 = 3.6;
+      resto.forEach(o => o.alpha(1 - .82 * P(t, t2, .6)));
+      baja.grow(P(t, t2 + .4, .5)); mirar.write(P(t, t2 + .7, .9));
+      ley(t);
+    },
+  };
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   A3  Espectrograma: ¿y si la señal cambia con el tiempo?
+   ════════════════════════════════════════════════════════════════════════════ */
+// Escala de Do mayor en piano (Do4 a Do5), muestreada a 4 kHz para calcular espectros acá.
+const ESCALA = window.DATOS?.escala;
+const HZ = [[250, '250'], [500, '500'], [1000, '1000\\,\\text{Hz}']];
+function espectrograma(x, M, salto, fmax, fs) {
+  const w = hann(M), cols = [];
+  for (let i = 0; i + M <= x.length; i += salto) cols.push(modDFT(x.slice(i, i + M).map((v, n) => v * w[n])).map(v => v * v));
+  const nb = Math.floor(fmax / (fs / M)) + 1, max = cols.reduce((m, c) => Math.max(m, ...c), 0);
+  // v[fila][col], fila 0 = frecuencia más alta; dB recortado a -40
+  const v = Array.from({ length: nb }, (_, fi) => cols.map(c => clamp((10 * Math.log10(c[nb - 1 - fi] / max + 1e-12) + 40) / 40)));
+  return { v, t0: M / 2 / fs, dt: salto / fs, ncols: cols.length };
+}
+
+slide('espectrograma', g => {
+  if (!ESCALA) return sinDatos(g);
+  const { fs, x } = ESCALA, dur = x.length / fs, M = 512, FMAX = 1100, w = hann(M), SALTO = 16;
+  const T0 = 1.375;  // la ventana se detiene en la 6.ª nota (La): lejos del rótulo "espectrograma" al girar
+  const titulo = new Mix(g, 'Espectrograma', { size: 54, x: 70, y: 80 }), tag = rotuloParentesis(g);
+  const F = marco(g, { izq: 'tiempo  ·  $t$', der: 'frecuencias  ·  $f$' });
+  const lkTF = new Mix(g, 'tiempo y frecuencia  ·  $(t, f)$', { size: 46, anchor: 'middle', x: 1440, y: 160, color: 'k' });
+  const aTL = new Axes(g, { ...BOX.TL, xr: [0, dur], yr: [-1.1, 1.1], base: 0, xlabel: 't' });
+  const aTR = new Axes(g, { ...BOX.TR, xr: [0, FMAX], yr: [0, 1.05], xlabel: 'f', xticks: HZ });
+  const aSG = new Axes(g, { ...BOX.TR, xr: [0, dur], yr: [0, FMAX], xlabel: 't', xticks: [[1, '1'], [2, '2\\,\\text{s}']], yticks: [[1000, '1\\,\\text{kHz}']] });
+  const aBL = new Axes(g, { ...BOX.BL, xr: [0, M - 1], yr: [-1.1, 1.1], base: 0, xlabel: 't' });
+  const aBR = new Axes(g, { ...BOX.BR, xr: [0, FMAX], yr: [0, 1.05], xlabel: 'f', xticks: HZ });
+  const lTL = rotulo(g, 'f(t)', BOX.TL, 'x'), lTR = rotulo(g, '|\\hat f(f)|^2', BOX.TR, 'k');
+  const lSG = rotulo(g, '\\text{espectrograma}', BOX.TR, 'k', 30);
+  const lBL = rotulo(g, 'f(t)\\cdot w(t - t_0)', BOX.BL, 'x'), lBR = rotulo(g, '|\\widehat{f\\,w}(f)|^2', BOX.BR, 'k');
+  const par = new Parlante(g, BOX.TL.x0 + 115, BOX.TL.y0 - 22, 'escala');
+  const ts = x.map((_, n) => n / fs);
+  const onda = new Curve(g, aTL.pts(ts, x), { width: 1.4 });
+  new Cabezal(g, ['escala'], aTL.x0, aTL.x1, aTL.y0, aTL.y1, dur);
+  // espectro global (hasta FMAX): el máximo de cada banda de 2,5 Hz, para que entre en el ancho del panel
+  const glob = modDFT(x), BANDA = 2.5, df = fs / x.length, por = Math.round(BANDA / df);
+  const bandas = Array.from({ length: FMAX / BANDA }, (_, b) => Math.max(...glob.slice(b * por, (b + 1) * por)) ** 2);
+  const gmax = Math.max(...bandas);
+  const sG = new Stems(g, aTR.yb, { r: 0, width: 2.2 });
+  const topsG = bandas.map((v, b) => [aTR.X((b + .5) * BANDA), aTR.Y(v / gmax)]);
+  // ventana deslizante y espectro del pedacito
+  const vent = new Curve(g, null, { color: 'h', width: 3.5 });
+  const sombra = E('path', {}, g); sombra.style.fill = C('h');
+  const pieza = new Curve(g, null, { width: 3.5 }), envol = new Curve(g, null, { color: 'h', width: 2.5, dash: '8 7' });
+  const sW = new Stems(g, aBR.yb, { r: 0, width: 2.2 });
+  const aW = new Arrow(g, 830, 760, 1090, 760), tW = tapa(g, 960, 718, 56, 50);
+  const aWl = new Tex(g, '\\F', { size: 52, x: 960, y: 736, anchor: 'middle' });
+  const aV = new Arrow(g, 470, 472, 470, 626, { color: 'h' });
+  const aVl = new Tex(g, '\\times\\, w', { size: 46, x: 444, y: 564, anchor: 'end', color: 'h' });
+  const aF = new Arrow(g, 830, 332, 1062, 332), tF = tapa(g, 946, 296, 56, 50);
+  const aFl = new Tex(g, '\\F', { size: 52, x: 946, y: 308, anchor: 'middle' });
+  const nb = Math.floor(FMAX / (fs / M));
+  function espectroEn(tc) {   // pedacito centrado en tc y su espectro, escalado a su propio máximo
+    const i0 = Math.round(tc * fs - M / 2), seg = x.slice(i0, i0 + M).map((v, n) => v * w[n]);
+    const m = modDFT(seg).slice(0, nb + 1).map(v => v * v), mx = Math.max(...m);
+    return { i0, seg, a: m.map(v => v / mx) };
+  }
+  function ventanaEn(tc) {
+    const { i0, seg, a } = espectroEn(tc);
+    const xs0 = Array.from({ length: M }, (_, n) => (i0 + n) / fs);
+    vent.set(xs0.map((u, n) => [aTL.X(u), aTL.Y(1.35 * w[n])]));
+    sombra.setAttribute('d', `M${aTL.X(xs0[0])},${aTL.y0 - 6}H${aTL.X(xs0[M - 1])}V${aTL.y1}H${aTL.X(xs0[0])}Z`);
+    pieza.set(seg.map((v, n) => [aBL.X(n), aBL.Y(v)]));
+    envol.set(w.map((v, n) => [aBL.X(n), aBL.Y(v)]));
+    sW.set(a.map((v, k) => [aBR.X(k * fs / M), aBR.Y(v)]));
+  }
+  // espectrograma (una imagen por tema): entero, y una copia de la que sólo se ve la columna de t0
+  const S = espectrograma(x, M, SALTO, FMAX, fs);
+  const urls = { claro: pngMapa(S.v, 'claro'), oscuro: pngMapa(S.v, 'oscuro') };
+  const caja = [aSG.X(S.t0 - S.dt / 2), aSG.Y(FMAX), aSG.X(S.t0 + S.ncols * S.dt) - aSG.X(S.t0), aSG.Y(0) - aSG.Y(FMAX)];
+  const sg = new Img(g, urls, ...caja), col = new Img(g, urls, ...caja);
+  g.insertBefore(sg.g, aSG.g); g.insertBefore(col.g, aSG.g);
+  const xc = aSG.X(T0);
+  // el espectro del pedacito en t0 gira 90° y se aplasta en la columna
+  // va con su eje f, para que se vea el giro aunque el espectro tenga pocos picos
+  const giro = E('g', {}, g);
+  const ejeGiro = E('path', { fill: 'none', 'stroke-linecap': 'round' }, giro); Object.assign(ejeGiro.style, { stroke: C('k'), strokeWidth: 3.5 });
+  const palos = E('path', { fill: 'none' }, giro); Object.assign(palos.style, { stroke: C('k'), strokeWidth: 3 });
+  const fGiro = new Tex(giro, 'f', { size: 38, anchor: 'middle', color: 'k' });
+  const espT0 = espectroEn(T0).a;
+  function girar(pRot, pPlancha) {
+    const phi = Math.PI / 2 * pRot, c = Math.cos(phi), sn = Math.sin(phi);
+    const ox = lerp(aBR.X(0), xc, pRot), oy = lerp(aBR.yb, aSG.yb, pRot);
+    const su = lerp((aBR.x1 - aBR.x0) / FMAX, (aSG.y1 - aSG.y0) / FMAX, pRot);   // px por Hz
+    const sv = lerp(aBR.yb - aBR.Y(1), 70, pRot) * (1 - pPlancha);              // px por unidad de altura
+    const P = (u, v) => [ox + u * c - v * sn, oy - u * sn - v * c];               // rotación antihoraria
+    let d = '';
+    espT0.forEach((a, k) => {
+      if (a * sv < .8) return;
+      const u = k * fs / M * su, [x1, y1] = P(u, 0), [x2, y2] = P(u, a * sv);
+      d += `M${x1.toFixed(1)},${y1.toFixed(1)}L${x2.toFixed(1)},${y2.toFixed(1)}`;
+    });
+    palos.setAttribute('d', d || 'M0,0');
+    const [ex0, ey0] = P(0, 0), [ex1, ey1] = P(FMAX * su, 0), [fx, fy] = P(FMAX * su + 26, -14);
+    ejeGiro.setAttribute('d', `M${ex0.toFixed(1)},${ey0.toFixed(1)}L${ex1.toFixed(1)},${ey1.toFixed(1)}`);
+    ejeGiro.style.opacity = 1 - pPlancha;
+    fGiro.at(fx, fy + 12); fGiro.alpha(1 - pPlancha);
+  }
+  // marcas de t0 (en la señal y en el espectrograma) y lectura de los ejes
+  const xw = aTL.X(T0);
+  const t0a = new Tex(g, 't_0', { size: 34, x: xw, y: aTL.y0 - 26, anchor: 'middle', color: 'h' });
+  const t0b = new Tex(g, 't_0', { size: 34, x: xc, y: aSG.yb + 40, anchor: 'middle', color: 'h' });
+  const marcaB = new Curve(g, [[xc, aSG.yb - 8], [xc, aSG.yb + 8]], { color: 'h', width: 4 });
+  const ejeT2 = new Curve(g, [[aSG.x0, aSG.yb], [aSG.x1, aSG.yb]], { color: 'x', width: 6 });
+  const ejeF = new Curve(g, [[aSG.x0, aSG.y1], [aSG.x0, aSG.y0]], { color: 'k', width: 6 });
+  const nT = new Txt(g, 'tiempo, como en la señal', { size: 30, x: (aSG.x0 + aSG.x1) / 2, y: aSG.yb + 76, anchor: 'middle', italic: true, color: 'x' });
+  const nF = new Txt(g, 'frecuencias', { size: 30, x: 0, y: 0, anchor: 'middle', italic: true, color: 'k' });
+  nF.g.setAttribute('transform', `translate(${aSG.x0 - 34},${(aSG.y0 + aSG.y1) / 2 + 30}) rotate(-90)`);
+  const nC = new Txt(g, 'color: cuánta energía', { size: 26, x: aSG.x1, y: aSG.y0 - 8, anchor: 'end', italic: true, color: 'dim' });
+  const cursor = new Curve(g, null, { color: 'h', width: 3 });
+  const ley = leyendas(g, [
+    ['una escala de Do mayor en piano: ocho notas, una tras otra', .2, 2.4],
+    ['su espectro tiene todas las notas (y sus armónicos)… pero no dice en qué orden sonaron', 3.2, 4.6],
+    ['recortamos un pedacito con una ventana suave, $w(t)=\\sin^2(\\pi t/T)$ (Hann): cortar de golpe ensucia el espectro', 5.0, 8.0],
+    ['el espectro del pedacito se para y se aplasta: queda una columna en $t_0$', 9.0, 12.2],
+    ['horizontal: el tiempo, como en la señal  ·  vertical: qué frecuencias suenan en cada instante', 12.4, 15.2],
+    ['cada pedacito es una columna: eso es el espectrograma', 15.6],
+  ], { size: 36 });
+  const T1 = 2.4, T2 = 4.6, T3 = 8.0, T4 = 12.2, T5 = 15.2;
+  const tMin = M / 2 / fs, tMax = dur - M / 2 / fs;
+  // slider: mueve la ventana a mano (sobre el eje de tiempo, o arrastrando la ventana misma)
+  let tManual = null, tUlt = 0;
+  const sl = E('g', { class: 'slider' }, g), yS = aTL.y1 + 22;
+  const pista = E('line', { x1: aTL.x0, x2: aTL.x1, y1: yS, y2: yS, 'stroke-linecap': 'round' }, sl);
+  Object.assign(pista.style, { stroke: C('tenue'), strokeWidth: 5 });
+  const perilla = E('circle', { cy: yS, r: 13 }, sl); perilla.style.fill = C('h');
+  const zonaS = E('rect', { x: aTL.x0 - 15, y: yS - 22, width: aTL.x1 - aTL.x0 + 30, height: 44, fill: 'transparent' }, sl);
+  const zonaV = E('rect', { x: aTL.x0, y: aTL.y0 - 10, width: aTL.x1 - aTL.x0, height: aTL.y1 - aTL.y0 + 10, fill: 'transparent' }, g);
+  [zonaS, zonaV].forEach(z => z.style.cursor = 'ew-resize');
+  const tDesde = e => {
+    const pt = stage.createSVGPoint(); pt.x = e.clientX; pt.y = e.clientY;
+    const q = pt.matrixTransform(stage.getScreenCTM().inverse());
+    return clamp(dur * (q.x - aTL.x0) / (aTL.x1 - aTL.x0), tMin, tMax);
+  };
+  let arrastra = false;
+  for (const z of [zonaS, zonaV]) {
+    z.addEventListener('pointerdown', e => { e.stopPropagation(); arrastra = true; z.setPointerCapture(e.pointerId); tManual = tDesde(e); yo.render(tUlt); });
+    z.addEventListener('pointermove', e => { if (!arrastra) return; tManual = tDesde(e); yo.render(tUlt); });
+    z.addEventListener('pointerup', () => arrastra = false);
+    z.addEventListener('click', e => e.stopPropagation());   // arrastrar no pasa de slide
+  }
+  const yo = {
+    steps: [1.4, 1.0, 2.2, 3.4, 4.2, 3.0, dur + .8],
+    audio: { 1: 'escala', 6: 'escala' },
+    reset() { tManual = null; },
+    render(t) {
+      titulo.write(P(t, 0, .8)); tag.write(P(t, .2, .8)); F.show(t > 0 ? 1 : 0);
+      aTL.create(P(t, .1, .6)); onda.create(P(t, .2, 1)); lTL.write(P(t, .4, .5)); par.alpha(P(t, .6, .4));
+      // 1: suena la escala · 2: espectro global
+      aF.grow(P(t, T1, .5)); aFl.write(P(t, T1 + .1, .4)); tF.style.opacity = t >= T1 + .1 ? 1 : 0;
+      aTR.create(P(t, T1 + .2, .5)); lTR.write(P(t, T1 + .4, .5)); sG.set(topsG, P(t, T1 + .4, 1.2));
+      // 3: la ventana barre hasta t0
+      const hayV = P(t, T2, .5);
+      tUlt = t;
+      const auto = t <= T5 ? lerp(tMin, T0, P(t, T2 + .9, 2.2)) : clamp(t - T5, tMin, tMax);
+      const tc = tManual ?? auto, aMano = tManual !== null;
+      const haySl = P(t, T2 + .6, .4);
+      sl.style.opacity = haySl; sl.style.pointerEvents = zonaV.style.pointerEvents = haySl > .5 ? 'auto' : 'none';
+      perilla.setAttribute('cx', aTL.X(tc));
+      ventanaEn(tc);
+      [vent, pieza, envol, sW].forEach(o => o.alpha(hayV)); sombra.style.opacity = .1 * hayV;
+      aV.grow(P(t, T2, .5)); aVl.write(P(t, T2 + .1, .5));
+      aBL.create(P(t, T2 + .2, .5)); lBL.write(P(t, T2 + .3, .5));
+      aW.grow(P(t, T2 + .4, .5)); aWl.write(P(t, T2 + .5, .4)); tW.style.opacity = t >= T2 + .5 ? 1 : 0;
+      aBR.create(P(t, T2 + .5, .5)); lBR.write(P(t, T2 + .6, .5));
+      // 4: cambian los ejes de la derecha; el espectro del pedacito gira y se aplasta en la columna de t0
+      const fuera = P(t, T3, .5);
+      [aTR, sG, lTR].forEach(o => o.alpha(1 - fuera));
+      F.lk.alpha(1 - fuera); lkTF.write(P(t, T3 + .3, .8));
+      aSG.create(P(t, T3 + .3, .6)); lSG.write(P(t, T3 + .5, .6));
+      const pRot = P(t, T3 + 1.0, 1.6), pPl = P(t, T3 + 2.8, .9);
+      girar(pRot, pPl); giro.style.opacity = t >= T3 + 1.0 && pPl < 1 ? 1 : 0;
+      const xCol = aSG.X(aMano ? tc : T0);   // la columna sigue a la ventana si se la mueve a mano
+      col.ventana(xCol - 5, xCol + 5);
+      col.alpha(pPl * (1 - P(t, T5, .3)));
+      const marcas = P(t, T3 + 3.2, .5) * (1 - P(t, T5, .4)) * (aMano ? 0 : 1);
+      t0a.write(marcas); t0b.write(marcas); marcaB.create(marcas);
+      // 5: lectura de los ejes
+      const ejes = 1 - P(t, T5, .5);
+      ejeT2.create(P(t, T4, .6)); ejeT2.alpha(ejes);
+      nT.write(P(t, T4 + .4, .7));
+      ejeF.create(P(t, T4 + 1.1, .6)); ejeF.alpha(ejes); nF.write(P(t, T4 + 1.3, .7));
+      nC.write(P(t, T4 + 1.9, .6));
+      // 6: barre de nuevo, al ritmo de la música, y se arma el espectrograma entero
+      const arma = t > T5;
+      sg.reveal(arma ? clamp((auto - (S.t0 - S.dt / 2)) / (S.ncols * S.dt), .002, 1) : 0);   // el slider no lo tapa
+      const xcur = aSG.X(tc);
+      cursor.set([[xcur, aSG.y0 - 4], [xcur, aSG.y1]]).alpha((arma && tc < tMax) || (aMano && t >= T3 + .3) ? 1 : 0);
+      ley(t);
+    },
+  };
+  return yo;   // los arrastres del slider vuelven a pintar con yo.render
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   A3'  ¿Ventana corta o larga?
+   ════════════════════════════════════════════════════════════════════════════ */
+slide('incertidumbre', g => {
+  if (!ESCALA) return sinDatos(g);
+  const { fs, x } = ESCALA, dur = x.length / fs, FMAX = 1100;
+  const titulo = new Txt(g, '¿Ventana corta o larga?', { size: 54, x: 70, y: 80 }), tag = rotuloParentesis(g);
+  const cols = [[512, 960], [128, 330], [2048, 1590]].map(([M, cx], j) => {
+    const W = 500, x0 = cx - W / 2;
+    const tira = new Axes(g, { x0, x1: x0 + W, y0: 240, y1: 330, xr: [0, dur], yr: [-1.6, 1.6], base: 0 });
+    tira.ay.g.style.display = tira.hy.style.display = 'none';
+    const onda = new Curve(g, x.map((v, n) => [tira.X(n / fs), tira.Y(.9 * v)]), { width: 1.2, color: 'tenue' });
+    const w = hann(M), i0 = Math.round(x.length / 2 - M / 2);
+    const vent = new Curve(g, w.map((v, n) => [tira.X((i0 + n) / fs), tira.Y(1.5 * v)]), { color: 'h', width: 3.5 });
+    const ax = new Axes(g, { x0, x1: x0 + W, y0: 400, y1: 730, xr: [0, dur], yr: [0, FMAX], xlabel: 't', yticks: j === 1 ? [[500, '500'], [1000, '1000']] : [] });
+    const S = espectrograma(x, M, Math.max(8, M / 16), FMAX, fs);
+    const img = new Img(g, { claro: pngMapa(S.v, 'claro'), oscuro: pngMapa(S.v, 'oscuro') }, ax.X(S.t0 - S.dt / 2), ax.Y(FMAX), ax.X(S.t0 + S.ncols * S.dt) - ax.X(S.t0), ax.Y(0) - ax.Y(FMAX));
+    g.insertBefore(img.g, ax.g);
+    const lab = new Mix(g, `ventana de $${M / fs * 1000}$ ms`, { size: 38, x: cx, y: 810, anchor: 'middle', color: 'h' });
+    const nota = new Txt(g, ['', 'se ve cuándo empieza cada nota, no cuál es', 'se ve qué notas son, no cuándo'][j], { size: 32, x: cx, y: 862, anchor: 'middle', italic: true, color: 'dim' });
+    return { tira, onda, vent, ax, img, lab, nota };
+  });
+  const yf = new Txt(g, 'f (Hz)', { size: 28, x: cols[1].ax.x0 + 14, y: 392, color: 'dim', italic: true });
+  const ley = leyendas(g, [['o sé cuándo, o sé qué frecuencia: no las dos a la vez (incertidumbre)', 4.4]]);
+  return {
+    steps: [1.6, 1.4, 1.4, 1.6],
+    render(t) {
+      titulo.write(P(t, 0, .8)); tag.write(P(t, .2, .8));
+      [0, 1.6, 3.0].forEach((a, j) => {
+        const c = cols[j];
+        c.tira.create(P(t, a, .5)); c.onda.create(P(t, a, .6)); c.vent.create(P(t, a + .3, .6));
+        c.ax.create(P(t, a + .3, .5)); c.img.reveal(P(t, a + .5, .9)); c.lab.write(P(t, a + .6, .6)); c.nota.write(P(t, a + .9, .6));
+      });
+      yf.write(P(t, 1.9, .5));
+      ley(t);
+    },
+  };
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   A3''  Una ballena de verdad (franca austral o jorobada, se elige en la slide):
+         el espectrograma se arma mientras suena.
+   ════════════════════════════════════════════════════════════════════════════ */
+slide('ballena', g => {
+  // Dos grabaciones para elegir con las pastillas de arriba (por si una no se escucha bien en el aula).
+  // La elegida se recuerda (localStorage) y no se resetea al navegar. La versión web (publicar.py) va sólo con
+  // la jorobada: sin la otra en DATOS queda una sola pastilla, que no se clickea.
+  const ESPECIES = {
+    franca: { D: window.DATOS?.ballena, audio: 'ballena', boton: 'franca austral',
+      credito: 'llamado tonal  ·  grabación: R. Ward y A. Recalde Salas (Curtin University)',
+      yticks: [[500, '500'], [1000, '1\\,\\text{kHz}']], que: 'un tono con sus armónicos apilados' },
+    jorobada: { D: window.DATOS?.jorobada, audio: 'jorobada', boton: 'jorobada',
+      credito: 'canto  ·  grabación: Glacier Bay National Park (NPS), dominio público',
+      yticks: [[1000, '1\\,\\text{kHz}'], [2000, '2\\,\\text{kHz}']], que: 'gemidos con armónicos y un tono que baja' },
+  };
+  const NOMBRES = Object.keys(ESPECIES).filter(n => ESPECIES[n].D); if (!NOMBRES.length) return sinDatos(g);
+  let esp = NOMBRES[0];
+  try { const e = localStorage.getItem('ballena-especie'); if (NOMBRES.includes(e)) esp = e; } catch (_) {}
+  // los pasos se fijan al cargar: el del canto dura lo que el clip más largo (los dos duran 5,1 s)
+  const DUR = Math.max(...NOMBRES.map(n => ESPECIES[n].D.dur));
+  const T2 = 1.4 + DUR + .2, T3 = T2 + 1.2;   // fin del canto · aparecen los controles
+  const estilo = (b, on) => {   // pastilla prendida o apagada (especie y forma de la ventana)
+    Object.assign(b.r.style, { fill: on ? C('h') : 'transparent', fillOpacity: on ? .14 : 0, stroke: C(on ? 'h' : 'tenue'), strokeWidth: on ? 3 : 2 });
+    b.t.t.style.fill = C(on ? 'h' : 'dim');
+  };
+
+  const titulo = new Txt(g, 'Y con una señal de verdad', { size: 54, x: 70, y: 80 }), tag = rotuloParentesis(g);
+  // ballena [franca austral] [jorobada]  crédito de la grabación elegida ··· parlante
+  const yS = 150, lB = new Txt(g, 'ballena', { size: 30, x: 230, y: yS, italic: true, color: 'dim' });
+  const sel = E('g', {}, g); let xs = 230 + lB.width + 18;
+  const pastillas = NOMBRES.map(n => {
+    const b = E('g', {}, sel); if (NOMBRES.length > 1) b.style.cursor = 'pointer';
+    const r = E('rect', { y: yS - 33, height: 46, rx: 23 }, b);
+    const t = new Txt(b, ESPECIES[n].boton, { size: 28, anchor: 'middle' }), w = t.width + 44;
+    r.setAttribute('x', xs); r.setAttribute('width', w); t.at(xs + w / 2, yS); xs += w + 12;
+    b.addEventListener('pointerdown', e => e.stopPropagation());
+    b.addEventListener('click', e => {
+      e.stopPropagation(); if (n === esp) return;
+      esp = n; try { localStorage.setItem('ballena-especie', n); } catch (_) {}
+      callar(); aplicar();
+    });
+    return { n, r, t };
+  });
+  const sub = new Txt(g, '', { size: 26, x: xs + 10, y: yS, italic: true, color: 'dim' });
+  const par = new Parlante(g, 1700, 140, () => ESPECIES[esp].audio, { size: 2 });
+
+  // una vista por especie (se ve sólo la elegida): arriba la onda (envolvente mínimo–máximo por columna),
+  // abajo el espectrograma, con el mismo eje t
+  const xticks = dur => Array.from({ length: Math.floor(dur) }, (_, j) => j + 1).map((v, j, a) => [v, j === a.length - 1 ? `${v}\\,\\text{s}` : String(v)]);
+  const vistas = {};
+  for (const n of NOMBRES) {
+    const D = ESPECIES[n].D, gE = E('g', {}, g);
+    const aO = new Axes(gE, { x0: 230, x1: 1730, y0: 222, y1: 352, xr: [0, D.dur], yr: [-1, 1], base: 0 });
+    const nO = D.onda.max.length, X = i => lerp(aO.x0 + 2, aO.x1, i / (nO - 1));
+    const contorno = [...D.onda.max.map((v, i) => [X(i), aO.Y(v)]), ...D.onda.min.map((v, i) => [X(i), aO.Y(v)]).reverse()];
+    const cpO = E('clipPath', { id: 'clipOnda-' + n }, gE), rO = E('rect', { x: aO.x0, y: aO.y0 - 10, width: 0, height: aO.y1 - aO.y0 + 20 }, cpO);
+    const onda = E('path', { d: pathD(contorno) + 'Z', 'clip-path': `url(#clipOnda-${n})` }, gE); onda.style.fill = C('x');
+    const ax = new Axes(gE, { x0: 230, x1: 1730, y0: 440, y1: 790, xr: [0, D.dur], yr: [0, D.fmax], xlabel: 't',
+      xticks: xticks(D.dur), yticks: ESPECIES[n].yticks });
+    const ley = leyendas(gE, [[`en la onda se ve cuándo canta, pero no qué: en el espectrograma, ${ESPECIES[n].que}`, T2 + .1, T3]], { size: 34, y: 1040 });
+    vistas[n] = { D, g: gE, aO, rO, ax, ley, img: null };   // la imagen del espectrograma se arma al mostrarla
+  }
+  const lO = new Tex(g, 'f(t)', { size: 38, x: 230 + 18, y: 222 - 4, color: 'x' });
+  const lE = new Txt(g, 'espectrograma', { size: 34, x: 230 + 18, y: 440 - 8, color: 'k' });
+
+  // espectrograma calculado acá, con la ventana elegida (largo y forma)
+  const FORMAS = {
+    rectangular: M => Array(M).fill(1),
+    Hann: hann,
+    gaussiana: M => Array.from({ length: M }, (_, n) => Math.exp(-.5 * ((n - M / 2) / (M / 6)) ** 2)),
+  };
+  // largos en muestras a 2,5 kHz (la franca): de 6 ms a 0,8 s; la jorobada, a 5 kHz, usa el doble de muestras
+  const LARGOS = [16, 32, 64, 128, 256, 512, 1024, 2048], I0 = 4, F0 = 'Hann';
+  const largo = (D, i) => LARGOS[i] * Math.round(D.fs / 2500);
+  const cache = {};   // por especie, largo y forma
+  function espectroBallena(n, iM, forma) {
+    const k = n + iM + forma; if (cache[k]) return cache[k];
+    const { D, ax } = vistas[n], M = largo(D, iM), w = FORMAS[forma](M), salto = Math.max(8, M / 8), fs = D.fs;
+    const nb = Math.floor(D.fmax / (fs / M)) + 1, cols = [];
+    for (let i = 0; i + M <= D.x.length; i += salto) cols.push(modDFT(D.x.slice(i, i + M).map((v, n) => v * w[n])).slice(0, nb).map(v => v * v));
+    const max = cols.reduce((m, c) => Math.max(m, ...c), 0);
+    // dB respecto del máximo; el fondo (la mediana + 6 dB) queda blanco, así el ruido del mar no lo tiñe todo
+    const dB = cols.map(c => c.map(p => 10 * Math.log10(p / max + 1e-12)));
+    const muestra = dB.flat().filter((_, i) => i % 7 === 0).sort((a, b) => a - b), piso = muestra[muestra.length >> 1] + 6;
+    const v = Array.from({ length: nb }, (_, fi) => dB.map(c => clamp((c[nb - 1 - fi] - piso) / (-6 - piso))));
+    const t0 = (M / 2 - salto / 2) / fs, t1 = t0 + cols.length * salto / fs;
+    return cache[k] = { urls: { claro: pngMapa(v, 'claro'), oscuro: pngMapa(v, 'oscuro') }, x: ax.X(t0), w: ax.X(t1) - ax.X(t0) };
+  }
+  const cursor = new Curve(g, null, { color: 'h', width: 3 });
+
+  // controles: largo de la ventana (slider) y forma (botones); la ventana se dibuja sobre la onda
+  let iM = I0, forma = F0, tUlt = 0;
+  const ctl = E('g', {}, g), yC = 880;
+  const sx0 = 230, sx1 = 760, sxI = i => lerp(sx0, sx1, i / (LARGOS.length - 1));
+  new Txt(ctl, 'largo de la ventana', { size: 28, x: sx0, y: yC - 30, italic: true, color: 'dim' });
+  const pista = E('line', { x1: sx0, x2: sx1, y1: yC, y2: yC, 'stroke-linecap': 'round' }, ctl);
+  Object.assign(pista.style, { stroke: C('tenue'), strokeWidth: 5 });
+  LARGOS.forEach((_, i) => { const d = E('circle', { cx: sxI(i), cy: yC, r: 4 }, ctl); d.style.fill = C('tenue'); });
+  const perilla = E('circle', { cy: yC, r: 13 }, ctl); perilla.style.fill = C('h');
+  const valor = new Txt(ctl, '', { size: 34, x: sx1 + 36, y: yC + 12, color: 'h' });
+  const zona = E('rect', { x: sx0 - 20, y: yC - 24, width: sx1 - sx0 + 40, height: 48, fill: 'transparent' }, ctl);
+  zona.style.cursor = 'ew-resize';
+  new Txt(ctl, 'forma', { size: 28, x: 1130, y: yC - 30, italic: true, color: 'dim' });
+  const botones = Object.keys(FORMAS).map((nombre, j) => {
+    const bx = 1130 + j * 205, b = E('g', {}, ctl); b.style.cursor = 'pointer';
+    const r = E('rect', { x: bx, y: yC - 26, width: 190, height: 52, rx: 26 }, b);
+    const t = new Txt(b, nombre, { size: 30, x: bx + 95, y: yC + 10, anchor: 'middle' });
+    b.addEventListener('pointerdown', e => e.stopPropagation());
+    b.addEventListener('click', e => { e.stopPropagation(); forma = nombre; aplicar(); });
+    b.addEventListener('pointerenter', () => mostrarAyuda(nombre));
+    b.addEventListener('pointerleave', () => mostrarAyuda(null));
+    return { nombre, r, t, bx };
+  });
+  // al pasar el mouse por una forma: un recuadro con su fórmula y su dibujo (t de 0 a T, como en el espectrograma)
+  const AYUDA = {
+    rectangular: ['w(t) = 1 \\quad (0 \\le t \\le T)', () => 1],
+    Hann: ['w(t) = \\sin^2(\\pi t / T)', u => Math.sin(Math.PI * u) ** 2],
+    gaussiana: ['w(t) = e^{-(t - T/2)^2 / 2\\sigma^2}', u => Math.exp(-.5 * ((u - .5) / (1 / 6)) ** 2), '\\sigma = T/6'],
+  };
+  const ayudas = {};
+  function mostrarAyuda(nombre) { for (const [k, a] of Object.entries(ayudas)) a.style.display = k === nombre ? '' : 'none'; }
+  for (const [nombre, [tex, w, extra]] of Object.entries(AYUDA)) {
+    const b = botones.find(q => q.nombre === nombre), cx = Math.min(b.bx + 95, 1650), W = 460, H = 250, y0 = yC - 40 - H;
+    const a = E('g', { style: 'pointer-events:none;display:none' }, g); ayudas[nombre] = a;
+    const r = E('rect', { x: cx - W / 2, y: y0, width: W, height: H, rx: 14 }, a);
+    Object.assign(r.style, { fill: C('bg'), stroke: C('h'), strokeWidth: 2.5 });
+    new Tex(a, tex, { size: 34, x: cx, y: y0 + 56, anchor: 'middle', color: 'h' });
+    const px0 = cx - 150, px1 = cx + 150, pyB = y0 + H - 50, pyT = y0 + 100;
+    new Curve(a, [[px0 - 20, pyB], [px1 + 20, pyB]], { color: 'ax', width: 2 });
+    const pts = Array.from({ length: 121 }, (_, i) => i / 120).map(u => [lerp(px0, px1, u), lerp(pyB, pyT, w(u))]);
+    new Curve(a, [[px0 - 20, pyB], [px0, pyB], ...pts, [px1, pyB], [px1 + 20, pyB]], { color: 'h', width: 4 });
+    new Tex(a, '0', { size: 28, x: px0, y: pyB + 34, anchor: 'middle', color: 'dim' });
+    new Tex(a, 'T', { size: 28, x: px1, y: pyB + 34, anchor: 'middle', color: 'dim' });
+    if (extra) new Tex(a, extra, { size: 28, x: cx + W / 2 - 18, y: pyT + 10, anchor: 'end', color: 'dim' });
+  }
+  const vent = E('path', {}, g); Object.assign(vent.style, { fill: C('h'), fillOpacity: .18, stroke: C('h'), strokeWidth: 3 });
+  function aplicar() {
+    const V = vistas[esp], { D, aO } = V, e = espectroBallena(esp, iM, forma);
+    if (V.img) V.img.cambiar(e.urls, e.x, e.w);
+    else { V.img = new Img(V.g, e.urls, e.x, V.ax.y0, e.w, V.ax.y1 - V.ax.y0); V.g.insertBefore(V.img.g, V.ax.g); }
+    NOMBRES.forEach(n => vistas[n].g.style.display = n === esp ? '' : 'none');
+    sub.t.textContent = ESPECIES[esp].credito;
+    pastillas.forEach(b => estilo(b, b.n === esp));
+    const M = largo(D, iM), w = FORMAS[forma](M), tc = D.dur / 2;
+    perilla.setAttribute('cx', sxI(iM));
+    valor.t.textContent = `${fmt(M / D.fs * 1000)} ms`;
+    botones.forEach(b => estilo(b, b.nombre === forma));
+    // la ventana, en escala sobre la onda (centrada en la mitad)
+    const yb = aO.y1 - 4, alto = aO.y1 - aO.y0 - 14;
+    const pts = w.map((v, n) => [aO.X(tc + (n - M / 2) / D.fs), yb - alto * v]);
+    vent.setAttribute('d', pathD([[pts[0][0], yb], ...pts, [pts.at(-1)[0], yb]]) + 'Z');
+    yo.render(tUlt);
+  }
+  const iDesde = e => {
+    const pt = stage.createSVGPoint(); pt.x = e.clientX; pt.y = e.clientY;
+    const q = pt.matrixTransform(stage.getScreenCTM().inverse());
+    return Math.round(clamp((q.x - sx0) / (sx1 - sx0)) * (LARGOS.length - 1));
+  };
+  let arrastra = false;
+  zona.addEventListener('pointerdown', e => { e.stopPropagation(); arrastra = true; zona.setPointerCapture(e.pointerId); iM = iDesde(e); aplicar(); });
+  zona.addEventListener('pointermove', e => { if (!arrastra) return; const i = iDesde(e); if (i !== iM) { iM = i; aplicar(); } });
+  zona.addEventListener('pointerup', () => arrastra = false);
+  zona.addEventListener('click', e => e.stopPropagation());
+
+  const ley = leyendas(g, [   // la del medio (qué se ve en el espectrograma) depende de la especie: va en su vista
+    ['¿qué se ve en la onda?', .8, 1.4],
+    ['ventana larga: frecuencias finas, tiempos borrosos  ·  corta: al revés  ·  y la forma también importa', T3 + .3],
+  ], { size: 34, y: 1040 });
+  const yo = {
+    steps: [1.4, DUR + .2, 1.2, 1.2],
+    audio: { get 1() { return ESPECIES[esp].audio; } },   // el canto que suena es el de la especie elegida
+    reset() { iM = I0; forma = F0; aplicar(); },   // la especie no se resetea
+    render(t) {
+      tUlt = t;
+      const { D, aO, rO, ax, img } = vistas[esp];
+      titulo.write(P(t, 0, .8)); tag.write(P(t, .2, .8)); lB.write(P(t, .3, .7)); sub.write(P(t, .3, .7)); par.alpha(P(t, .6, .4));
+      const haySel = P(t, .4, .6);   // el selector está desde el primer paso: se elige antes de que suene
+      sel.style.opacity = haySel; sel.style.pointerEvents = haySel > .5 ? 'auto' : 'none';
+      aO.create(P(t, .1, .6)); lO.write(P(t, .3, .5)); rO.setAttribute('width', (aO.x1 - aO.x0 + 4) * P(t, .2, 1.1));
+      const p = lin(t, 1.4, D.dur);
+      ax.create(P(t, 1.4, .5)); lE.write(P(t, 1.5, .5));
+      img.reveal(t > 1.4 ? Math.max(p, .001) : 0);
+      const xc = lerp(ax.x0, ax.x1, p);
+      cursor.set([[xc, aO.y0 - 8], [xc, ax.y1]]).alpha(t > 1.4 && p < 1 ? 1 : 0);
+      // 3: controles
+      const hay = P(t, T3, .6);
+      ctl.style.opacity = hay; vent.style.opacity = hay; ctl.style.pointerEvents = hay > .5 ? 'auto' : 'none';
+      ley(t); vistas[esp].ley(t);
+    },
+  };
+  aplicar();
+  return yo;
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   B · Fourier en 2D. La foto (de Tilo, el perro) viene en datos.js como un byte por
+   píxel (y tres, a color); transformadas, filtros y compresiones se calculan acá.
+   ════════════════════════════════════════════════════════════════════════════ */
+const FOTO = (() => {
+  const D = window.DATOS?.imagen; if (!D) return null;
+  const b = atob(D.px), u = new Float64Array(D.n * D.n);
+  for (let i = 0; i < u.length; i++) u[i] = b.charCodeAt(i) / 255;
+  const c = atob(D.rgb || ''), rgb = [0, 1, 2].map(k => Float64Array.from({ length: D.n * D.n }, (_, i) => c.length ? c.charCodeAt(3 * i + k) / 255 : u[i]));
+  return { n: D.n, u, rgb };
+})();
+// FFT 2D en el lugar: por filas ('x'), por columnas ('y') o ambas
+function fft2(re, im, n, dirs = 'xy') {
+  const r = new Float64Array(n), m = new Float64Array(n);
+  const pasada = (idx) => {
+    for (let a = 0; a < n; a++) {
+      for (let b = 0; b < n; b++) { r[b] = re[idx(a, b)]; m[b] = im[idx(a, b)]; }
+      fft(r, m);
+      for (let b = 0; b < n; b++) { re[idx(a, b)] = r[b]; im[idx(a, b)] = m[b]; }
+    }
+  };
+  if (dirs.includes('x')) pasada((j, l) => j * n + l);
+  if (dirs.includes('y')) pasada((l, j) => j * n + l);
+}
+function ifft2(re, im, n) {   // conj · FFT · conj / n²
+  for (let i = 0; i < im.length; i++) im[i] = -im[i];
+  fft2(re, im, n);
+  for (let i = 0; i < im.length; i++) { re[i] /= n * n; im[i] = -im[i] / (n * n); }
+}
+function transformar(u, n, dirs = 'xy') { const re = Float64Array.from(u), im = new Float64Array(n * n); fft2(re, im, n, dirs); return { re, im }; }
+// log|z| con la frecuencia cero al centro (en las direcciones transformadas), llevado a [0, 1] con R décadas de rango
+function espLog(z, n, dirs = 'xy', R = 4) {
+  const sx = dirs.includes('x') ? n / 2 : 0, sy = dirs.includes('y') ? n / 2 : 0, v = new Float64Array(n * n);
+  let mx = -Infinity;
+  for (let i = 0; i < n * n; i++) mx = Math.max(mx, Math.log10(Math.hypot(z.re[i], z.im[i]) + 1e-12));
+  for (let j = 0; j < n; j++) for (let l = 0; l < n; l++) {
+    const i = ((j + sy) % n) * n + (l + sx) % n;
+    v[j * n + l] = clamp((Math.log10(Math.hypot(z.re[i], z.im[i]) + 1e-12) - mx + R) / R);
+  }
+  return v;
+}
+// mapas extra: verde para H; gris para fotos (igual en los dos temas)
+MAPAS.hclaro = [[0, '#ffffff'], [.5, '#7cc48c'], [1, '#0f4a1e']];
+MAPAS.hoscuro = [[0, '#121315'], [.5, '#2f7a40'], [1, '#c8f5d2']];
+const LUTS = {};
+const lut = mapa => LUTS[mapa] ??= Array.from({ length: 256 }, (_, i) => colorMapa(i / 255, mapa));
+function pngPlano(v, w, h, mapa) {   // v plano (fila por fila) en [0, 1] → dataURL
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  const cx = cv.getContext('2d'), im = cx.createImageData(w, h), L = mapa === 'gris' ? null : lut(mapa);
+  for (let i = 0; i < w * h; i++) {
+    const q = Math.round(255 * clamp(v[i])), c = L ? L[q] : [q, q, q];
+    im.data.set([c[0], c[1], c[2], 255], 4 * i);
+  }
+  cx.putImageData(im, 0, 0);
+  return cv.toDataURL();
+}
+const URLS = {   // una imagen por tema
+  gris: (v, n) => { const u = pngPlano(v, n, n, 'gris'); return { claro: u, oscuro: u }; },
+  k: (v, n) => ({ claro: pngPlano(v, n, n, 'claro'), oscuro: pngPlano(v, n, n, 'oscuro') }),
+  h: (v, n) => ({ claro: pngPlano(v, n, n, 'hclaro'), oscuro: pngPlano(v, n, n, 'hoscuro') }),
+};
+// Imagen cuadrada que se mueve, se escala y se recorta. recortes = [[u0, v0, u1, v1]] en fracciones del lado.
+class Cuadro extends M {
+  constructor(parent, urls, o = {}) {
+    super(parent);
+    const id = 'cq' + Math.random().toString(36).slice(2, 8);
+    this.cp = E('clipPath', { id }, this.g);
+    this.rs = [0, 1, 2].map(() => E('rect', { width: 0, height: 0 }, this.cp));
+    this.ims = Object.entries(urls).map(([tema, url]) => E('image', { href: url, preserveAspectRatio: 'none', class: 'solo-' + tema, 'clip-path': `url(#${id})` }, this.g));
+    if (o.pixelado) this.ims.forEach(im => im.style.imageRendering = 'pixelated');
+    this.borde = E('rect', { fill: 'none' }, this.g);
+    Object.assign(this.borde.style, { stroke: C(o.borde || 'tenue'), strokeWidth: 2, opacity: o.borde === false ? 0 : 1 });
+    this.recortes = [[0, 0, 1, 1]];
+    this.pos(o.cx ?? 0, o.cy ?? 0, o.lado ?? 100);
+  }
+  pos(cx, cy, lado) {
+    Object.assign(this, { cx, cy, lado, x0: cx - lado / 2, y0: cy - lado / 2 });
+    for (const el of [...this.ims, this.borde]) { el.setAttribute('x', this.x0); el.setAttribute('y', this.y0); el.setAttribute('width', lado); el.setAttribute('height', lado); }
+    return this.recortar(this.recortes);
+  }
+  recortar(rs) {
+    this.recortes = rs;
+    this.rs.forEach((r, i) => {
+      const [u0, v0, u1, v1] = rs[i] || [0, 0, 0, 0];
+      r.setAttribute('x', this.x0 + u0 * this.lado); r.setAttribute('y', this.y0 + v0 * this.lado);
+      r.setAttribute('width', Math.max(0, (u1 - u0) * this.lado)); r.setAttribute('height', Math.max(0, (v1 - v0) * this.lado));
+    });
+    this.borde.style.visibility = rs.length && rs[0][2] > rs[0][0] ? 'visible' : 'hidden';
+    return this;
+  }
+  cambiar(urls) { for (const im of this.ims) im.setAttribute('href', urls[im.getAttribute('class').replace('solo-', '')]); return this; }
+  // píxel (fila j, columna l) → coordenadas en pantalla (centro del píxel)
+  X(l, n = 256) { return this.x0 + (l + .5) / n * this.lado; }
+  Y(j, n = 256) { return this.y0 + (j + .5) / n * this.lado; }
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   Apertura de la sección: Fourier en 2D.
+   ════════════════════════════════════════════════════════════════════════════ */
+slide('fourier-2d', g => {
+  const titulo = new Txt(g, 'Fourier en 2D', { size: 84, x: 960, y: 400, anchor: 'middle' });
+  const sub = new Txt(g, 'la misma receta, ahora con imágenes', { size: 44, x: 960, y: 490, anchor: 'middle', italic: true, color: 'dim' });
+  const y = 680, sz = 58;
+  const receta = [
+    new Tex(g, '\\class{cx}{u(\\mathbf{x})}', { size: sz, x: 470, y, anchor: 'middle' }),
+    new Arrow(g, 560, y - 18, 700, y - 18), new Tex(g, '\\F', { size: 44, x: 630, y: y - 42, anchor: 'middle' }),
+    new Tex(g, '\\class{ck}{\\hat u(\\mathbf{k})}', { size: sz, x: 790, y, anchor: 'middle' }),
+    new Arrow(g, 880, y - 18, 1040, y - 18, { color: 'h' }), new Tex(g, '\\times\\, H(\\mathbf{k})', { size: 44, x: 960, y: y - 42, anchor: 'middle', color: 'h' }),
+    new Tex(g, '\\class{ch}{H}\\class{ck}{\\hat u}', { size: sz, x: 1110, y, anchor: 'middle' }),
+    new Arrow(g, 1180, y - 18, 1320, y - 18), new Tex(g, '\\F^{-1}', { size: 44, x: 1250, y: y - 42, anchor: 'middle' }),
+    new Tex(g, '\\class{cx}{g(\\mathbf{x})}', { size: sz, x: 1410, y, anchor: 'middle' }),
+  ];
+  return {
+    steps: [2.6],
+    render(t) {
+      titulo.write(P(t, 0, 1.0)); sub.write(P(t, .6, .8));
+      receta.forEach((o, i) => { const p = P(t, .9 + i * .1, .5); o.grow ? o.grow(p) : o.write(p); });
+    },
+  };
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   B0  Una imagen es una matriz: 𝓕 de cada fila, después de cada columna = 𝓕 2D.
+   ════════════════════════════════════════════════════════════════════════════ */
+slide('matriz', g => {
+  if (!FOTO) return sinDatos(g);
+  const { n, u } = FOTO;
+  const titulo = new Txt(g, 'Una imagen es una matriz', { size: 54, x: 70, y: 80 });
+  const F = marco(g, { izq: 'espacio real  ·  $(x, y)$', der: 'frecuencias  ·  $(k_x, k_y)$' });
+  // la foto, con "cámara": se puede acercar hasta ver los píxeles con sus valores
+  const OBJ = [35, 27], ZMAX = n / 9;     // fila y columna del píxel al que nos acercamos (el borde de una oreja)
+  const cp = E('clipPath', { id: 'clipCam' }, g), cpR = E('rect', {}, cp);
+  const cam = E('g', { 'clip-path': 'url(#clipCam)' }, g), mundo = E('g', {}, cam);
+  const urlFoto = pngPlano(u, n, n, 'gris');
+  const im = E('image', { href: urlFoto, x: 0, y: 0, width: n, height: n, preserveAspectRatio: 'none' }, mundo);
+  im.style.imageRendering = 'pixelated';
+  const grilla = E('g', {}, mundo), numeros = E('g', {}, mundo);
+  let dg = '';
+  for (let j = OBJ[0] - 7; j <= OBJ[0] + 7; j++) dg += `M${OBJ[1] - 7},${j}H${OBJ[1] + 8}`;
+  for (let l = OBJ[1] - 7; l <= OBJ[1] + 7; l++) dg += `M${l},${OBJ[0] - 7}V${OBJ[0] + 8}`;
+  const gl = E('path', { d: dg, fill: 'none' }, grilla); Object.assign(gl.style, { stroke: '#808080', strokeWidth: .025 });
+  for (let j = OBJ[0] - 6; j <= OBJ[0] + 6; j++) for (let l = OBJ[1] - 6; l <= OBJ[1] + 6; l++) {
+    const v = u[j * n + l], t = E('text', { x: l + .5, y: j + .62, 'font-size': .34, 'text-anchor': 'middle' }, numeros);
+    t.textContent = Math.round(v * 255); t.style.fill = v < .5 ? '#ffffff' : '#141414';
+  }
+  const marcoCam = E('rect', { fill: 'none' }, g); Object.assign(marcoCam.style, { stroke: C('tenue'), strokeWidth: 2 });
+  function camara(cx, cy, lado, Z, q) {   // q: cuánto nos movimos hacia OBJ (1 = centrado)
+    const cu = lerp(n / 2, OBJ[1] + .5, q), cv = lerp(n / 2, OBJ[0] + .5, q), s = lado / n * Z;
+    mundo.setAttribute('transform', `translate(${cx},${cy}) scale(${s}) translate(${-cu},${-cv})`);
+    for (const r of [cpR, marcoCam]) { r.setAttribute('x', cx - lado / 2); r.setAttribute('y', cy - lado / 2); r.setAttribute('width', lado); r.setAttribute('height', lado); }
+    return { X: l => cx + (l + .5 - cu) * s, Y: j => cy + (j + .5 - cv) * s };
+  }
+  // transformadas: por filas, por columnas y 2D
+  const zx = transformar(u, n, 'x'), zy = transformar(u, n, 'y'), z2 = transformar(u, n, 'xy');
+  const filas = new Cuadro(g, URLS.k(espLog(zx, n, 'x', 3.5), n), { cx: 1440, cy: 415, lado: 400 });
+  const dosD = new Cuadro(g, URLS.k(espLog(z2, n, 'xy', 4), n), { cx: 1440, cy: 415, lado: 400 });
+  const cols = new Cuadro(g, URLS.k(espLog(zy, n, 'y', 3.5), n), { cx: 960, cy: 790, lado: 220 });
+  // una fila como señal 1D, y su espectro
+  const aU = new Axes(g, { x0: 150, x1: 790, y0: 700, y1: 870, xr: [0, n - 1], yr: [0, 1], xlabel: 'x' });
+  const aK = new Axes(g, { x0: 1130, x1: 1770, y0: 700, y1: 870, xr: [-n / 2, n / 2], yr: [-1, 2.6], log: true, xlabel: 'k_x' });
+  const lU = new Tex(g, 'u(x,\\, y_0)', { size: 36, x: 168, y: 694, color: 'x' });
+  const lK = new Tex(g, '|\\hat u(k_x,\\, y_0)|', { size: 36, x: 1148, y: 694, color: 'k' });
+  const escLog = new Txt(g, '(escala log)', { size: 26, x: 1770, y: 694, anchor: 'end', italic: true, color: 'dim' });
+  const curva = new Curve(g, null, { width: 3 }), stems = new Stems(g, aK.yb, { r: 0, width: 1.6 });
+  const fila = j => Array.from({ length: n }, (_, l) => u[j * n + l]);
+  const espFila = j => { const m = modDFT(fila(j)); return Array.from({ length: n }, (_, i) => { const k = i - n / 2 + 1; return [aK.X(k), aK.Y(m[Math.abs(k)])]; }); };
+  const banda = E('rect', { fill: 'none' }, g); Object.assign(banda.style, { stroke: C('x'), strokeWidth: 3 });
+  const bandaK = E('rect', { fill: 'none' }, g); Object.assign(bandaK.style, { stroke: C('k'), strokeWidth: 3 });
+  const bandaC = E('rect', { fill: 'none' }, g); Object.assign(bandaC.style, { stroke: C('k'), strokeWidth: 3 });
+  const J0 = 150;   // la fila que se despega (cruza el hocico)
+  // slider vertical (al lado de la foto) para elegir la fila; también se puede arrastrar sobre la foto
+  let jManual = null, tUlt = 0, arrastra = false;
+  const FY0 = 215, FY1 = 615, sl = E('g', {}, g), xS = 236;
+  const pista = E('line', { x1: xS, x2: xS, y1: FY0, y2: FY1, 'stroke-linecap': 'round' }, sl);
+  Object.assign(pista.style, { stroke: C('tenue'), strokeWidth: 5 });
+  const perilla = E('circle', { cx: xS, r: 13 }, sl); perilla.style.fill = C('x');
+  new Txt(sl, 'fila', { size: 26, x: xS, y: FY0 - 16, anchor: 'middle', italic: true, color: 'dim' });
+  const zonaS = E('rect', { x: xS - 24, y: FY0 - 10, width: 48, height: FY1 - FY0 + 20, fill: 'transparent' }, sl);
+  const zonaF = E('rect', { x: 280, y: FY0, width: 400, height: FY1 - FY0, fill: 'transparent' }, g);
+  [zonaS, zonaF].forEach(z => z.style.cursor = 'ns-resize');
+  const jDesde = e => {
+    const pt = stage.createSVGPoint(); pt.x = e.clientX; pt.y = e.clientY;
+    const q = pt.matrixTransform(stage.getScreenCTM().inverse());
+    return Math.round(clamp((q.y - FY0) / (FY1 - FY0)) * (n - 1));
+  };
+  for (const z of [zonaS, zonaF]) {
+    z.addEventListener('pointerdown', e => { e.stopPropagation(); arrastra = true; z.setPointerCapture(e.pointerId); jManual = jDesde(e); yo.render(tUlt); });
+    z.addEventListener('pointermove', e => { if (!arrastra) return; jManual = jDesde(e); yo.render(tUlt); });
+    z.addEventListener('pointerup', () => arrastra = false);
+    z.addEventListener('click', e => e.stopPropagation());
+  }
+  // flechas
+  const aF = new Arrow(g, 720, 415, 1200, 415), tF = tapa(g, 960, 379, 60, 50);
+  const aFl = new Tex(g, '\\F', { size: 52, x: 960, y: 391, anchor: 'middle' });
+  const tSub = tapa(g, 960, 452, 340, 40);
+  const porFilas = new Txt(g, 'por filas', { size: 30, x: 960, y: 462, anchor: 'middle', italic: true, color: 'dim' });
+  const porAmbas = new Txt(g, 'por filas y por columnas', { size: 30, x: 960, y: 462, anchor: 'middle', italic: true, color: 'dim' });
+  const aR = new Arrow(g, 830, 790, 1090, 790), tR = tapa(g, 960, 754, 60, 50);
+  const aRl = new Tex(g, '\\F', { size: 52, x: 960, y: 766, anchor: 'middle' });
+  const lFilas = new Tex(g, '|\\hat u(k_x,\\, y)|', { size: 36, x: 1240, y: 204, color: 'k' });
+  const l2D = new Tex(g, '|\\hat u(k_x,\\, k_y)|', { size: 36, x: 1240, y: 204, color: 'k' });
+  const lFoto = new Tex(g, 'u(x,\\, y)', { size: 36, x: 280, y: 204, color: 'x' });
+  // ¿alcanza con transformar las filas? Una tira chica con rayas horizontales: cada fila es constante,
+  // así que todo cae en k_x = 0… pero esa columna todavía oscila en y. Recién al transformar las columnas queda en dos puntos.
+  const K0 = 3, rayasFinas = Float64Array.from({ length: n * n }, (_, i) => .5 + .5 * Math.cos(2 * Math.PI * K0 * Math.floor(i / n) / n));
+  const MI = { y: 790, l: 190, x: [470, 960, 1450] };
+  // panel del medio: la columna k_x = 0 (línea) y, a lo largo de y, el valor que queda ahí: N cos(k_0 y), que oscila
+  const panel = (cx, dibujar) => {
+    const o = new M(g), x0 = cx - MI.l / 2, y0 = MI.y - MI.l / 2;
+    const b = E('rect', { x: x0, y: y0, width: MI.l, height: MI.l, fill: 'none' }, o.g); Object.assign(b.style, { stroke: C('tenue'), strokeWidth: 2 });
+    dibujar(o.g, x0, y0); return o;
+  };
+  const mini = [
+    new Cuadro(g, URLS.gris(rayasFinas, n), { cx: MI.x[0], cy: MI.y, lado: MI.l }),
+    panel(MI.x[1], (pg, x0, y0) => {
+      new Curve(pg, [[x0 + MI.l / 2, y0], [x0 + MI.l / 2, y0 + MI.l]], { color: 'tenue', width: 2, dash: '5 5' });
+      const pts = Array.from({ length: 121 }, (_, i) => i / 120).map(v => [x0 + MI.l / 2 + .36 * MI.l * Math.cos(2 * Math.PI * K0 * v), y0 + v * MI.l]);
+      new Curve(pg, pts, { color: 'k', width: 4 });
+      new Tex(pg, 'k_x', { size: 24, x: x0 + MI.l - 6, y: y0 + MI.l - 8, anchor: 'end', color: 'dim' });
+      new Tex(pg, 'y', { size: 24, x: x0 + 8, y: y0 + 26, color: 'dim' });
+    }),
+    panel(MI.x[2], (pg, x0, y0) => {
+      new Curve(pg, [[x0 + MI.l / 2, y0], [x0 + MI.l / 2, y0 + MI.l]], { color: 'tenue', width: 2, dash: '5 5' });
+      new Curve(pg, [[x0, y0 + MI.l / 2], [x0 + MI.l, y0 + MI.l / 2]], { color: 'tenue', width: 2, dash: '5 5' });
+      for (const s of [-1, 1]) { const c = E('circle', { cx: x0 + MI.l / 2, cy: MI.y + s * .3 * MI.l, r: 10 }, pg); c.style.fill = C('k'); }
+      new Tex(pg, 'k_x', { size: 24, x: x0 + MI.l - 6, y: y0 + MI.l / 2 - 8, anchor: 'end', color: 'dim' });
+      new Tex(pg, 'k_y', { size: 24, x: x0 + MI.l / 2 + 8, y: y0 + 26, color: 'dim' });
+    }),
+  ];
+  const miniF = [0, 1].map(i => new Arrow(g, MI.x[i] + MI.l / 2 + 20, MI.y, MI.x[i + 1] - MI.l / 2 - 20, MI.y, { width: 3.5, head: 18 }));
+  const miniL = [new Txt(g, 'filas', { size: 28, x: (MI.x[0] + MI.x[1]) / 2, y: MI.y - 16, anchor: 'middle', italic: true, color: 'dim' }),
+    new Txt(g, 'columnas', { size: 28, x: (MI.x[1] + MI.x[2]) / 2, y: MI.y - 16, anchor: 'middle', italic: true, color: 'dim' })];
+  const miniN = [['$u = \\cos(k_0 y)$', 'x'], ['en $k_x = 0$ queda $N\\cos(k_0 y)$: oscila en $y$', 'k'], ['sólo en $(0, \\pm k_0)$', 'k']]
+    .map(([s, col], i) => new Mix(g, s, { size: 26, x: MI.x[i], y: MI.y + MI.l / 2 + 34, anchor: 'middle', italic: true, color: col }));
+  // el rombo del final: u → (filas | columnas) → û
+  const R = { u: [480, 560, 300], f: [960, 330, 220], c: [960, 790, 220], d: [1440, 560, 300] };
+  const rombo = [
+    [[640, 500], [835, 380], 'filas'], [[1085, 380], [1280, 500], 'columnas'],
+    [[640, 620], [835, 740], 'columnas'], [[1085, 740], [1280, 620], 'filas'],
+  ].map(([a, b, s]) => {
+    // el rótulo va del lado de afuera del rombo, separado de la flecha
+    const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2, L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    let nx = -(b[1] - a[1]) / L, ny = (b[0] - a[0]) / L;
+    if (nx * (mx - 960) + ny * (my - 560) < 0) { nx = -nx; ny = -ny; }
+    return { fl: new Arrow(g, ...a, ...b, { width: 3.5, head: 18 }), tx: new Txt(g, s, { size: 30, x: mx + 50 * nx, y: my + 50 * ny + 10, anchor: 'middle', italic: true, color: 'dim' }) };
+  });
+  const ley = leyendas(g, [
+    ['Tilo, en escala de grises: $256 \\times 256$ píxeles', .3, 1.6],
+    ['cada píxel es un número, de 0 (negro) a 255 (blanco): la foto es una matriz $u_{jl}$', 2.6, 4.2],
+    ['cada fila de la matriz es una señal 1D…', 5.6, 7.2],
+    ['…y la podemos transformar como cualquier señal', 7.6, 9.4],
+    ['lo mismo con todas las filas: transformamos en la dirección $x$', 9.8, 12.6],
+    ['¿alcanza con las filas? con rayas horizontales todo cae en $k_x = 0$… pero ahí todavía depende de $y$', 12.8, 15.6],
+    ['transformando también las columnas: $\\hat u(k_x, k_y) = \\sum_{j,l} u_{jl}\\, e^{-i(k_x x_l + k_y y_j)}$, la transformada 2D', 15.8, 19.0],
+    ['el orden no importa: filas y después columnas, o al revés', 19.6],
+  ], { size: 38 });
+  const T1 = 1.6, T2 = 4.2, T3 = 7.2, T4 = 9.4, TA = 12.6, T5 = 15.6, T6 = 19.0;
+  const yo = {
+    steps: [1.6, 2.6, 3.0, 2.2, 3.2, 3.0, 3.4, 3.0],
+    reset() { jManual = null; },
+    render(t) {
+      tUlt = t;
+      titulo.write(P(t, 0, .8));
+      // 0–1: la foto en el centro y el zoom a los píxeles; 2: vuelve y se va a la izquierda
+      const zin = P(t, T1, 2.0) * (1 - P(t, T2, 1.0)), Z = Math.exp(Math.log(ZMAX) * zin);
+      const q = (1 - 1 / Z) / (1 - 1 / ZMAX);
+      const pm = P(t, T2 + .9, 1.0), pr = P(t, T6, 1.2);
+      const cx = lerp(lerp(960, 480, pm), R.u[0], pr), cy = lerp(lerp(560, 415, pm), R.u[1], pr), lado = lerp(lerp(560, 400, pm), R.u[2], pr);
+      const ver = camara(cx, cy, lado, Z, q);
+      cam.style.opacity = marcoCam.style.opacity = P(t, .1, .8);
+      grilla.style.opacity = P(t, T1 + 1.0, .8) * (1 - P(t, T2, .3));
+      numeros.style.opacity = P(t, T1 + 1.5, .6) * (1 - P(t, T2, .3));
+      F.show(P(t, T2 + 1.3, 1)); F.div.alpha(P(t, T2 + 1.3, .3) * (1 - .85 * Math.max(pr, P(t, TA, .4))));
+      tSub.style.opacity = t >= T3 + 1.1 && t < T6 ? 1 : 0;
+      lFoto.write(P(t, T2 + 1.6, .6) * (1 - P(t, T6, .4)));
+      // 2: una fila se despega
+      const sweepF = lin(t, T4 + .2, 2.6), jBarr = Math.min(n - 1, Math.round(sweepF * (n - 1)));
+      const j = jManual ?? (t < T4 + .2 ? J0 : jBarr), jF = jManual ?? J0;
+      const haySl = P(t, T2 + 2.4, .4) * (1 - P(t, TA, .4));
+      sl.style.opacity = haySl; sl.style.pointerEvents = zonaF.style.pointerEvents = haySl > .5 ? 'auto' : 'none';
+      perilla.setAttribute('cy', lerp(FY0, FY1, j / (n - 1)));
+      const hayFila = P(t, T2 + 1.8, .4) * (1 - P(t, TA, .5));
+      const yF = ver.Y(j), alto = Math.max(4, lado / n);
+      for (const [r, x0] of [[banda, cx - lado / 2], [bandaK, 1240]]) { r.setAttribute('x', x0 - 3); r.setAttribute('width', (r === banda ? lado : 400) + 6); r.setAttribute('y', (r === banda ? yF : filas.Y(j)) - alto / 2 - 3); r.setAttribute('height', alto + 6); }
+      banda.style.opacity = hayFila;
+      aU.create(P(t, T2 + 2.0, .5));
+      const pd = P(t, T2 + 2.1, .9), desde = Array.from({ length: n }, (_, l) => [ver.X(l), yF]), hasta = aU.pts(Array.from({ length: n }, (_, l) => l), fila(j));
+      curva.set(lerpPts(desde, hasta, pd)).create(t > T2 + 2.1 ? 1 : 0).alpha(1 - P(t, TA, .5));
+      lU.write(P(t, T2 + 2.4, .5)); lU.alpha(1 - P(t, TA, .5)); aU.alpha(1 - P(t, TA, .5));
+      // 3: 𝓕 de esa fila
+      aR.grow(P(t, T3, .5)); aRl.write(P(t, T3 + .1, .4)); tR.style.opacity = t >= T3 + .1 && t < TA + .3 ? 1 : 0;
+      aK.create(P(t, T3 + .2, .5)); lK.write(P(t, T3 + .4, .5)); escLog.write(P(t, T3 + .4, .5));
+      stems.set(espFila(j), P(t, T3 + .3, .9));
+      [aR, aRl, aK, lK, escLog, stems].forEach(o => o.alpha(1 - P(t, TA, .5)));
+      // …que se pinta como una fila de colores en la imagen de la derecha
+      aF.grow(P(t, T3 + .9, .6)); aFl.write(P(t, T3 + 1.0, .4)); tF.style.opacity = t >= T3 + 1.0 && t < T6 ? 1 : 0;
+      porFilas.write(P(t, T3 + 1.1, .5) * (1 - P(t, T5, .3)));
+      const fj = (jF - 1) / n, fj1 = (jF + 2) / n, hayRow = P(t, T3 + 1.3, .5);
+      filas.recortar(t < T4 + .2 ? [[0, fj, hayRow, fj1]] : [[0, fj, 1, fj1], [0, 0, 1, (jBarr + 1) / n]]);
+      bandaK.style.opacity = hayRow * (1 - P(t, TA, .5));
+      lFilas.write(P(t, T3 + 1.4, .5) * (1 - P(t, T5 + .2, .4)));
+      // 5: columnas → 2D
+      const pc = lin(t, T5 + .2, 2.4);
+      dosD.recortar([[0, 0, pc, 1]]); dosD.alpha(t > T5 + .2 ? 1 : 0);
+      const xc = 1240 + 400 * pc;
+      bandaC.setAttribute('x', xc - 5); bandaC.setAttribute('y', 212); bandaC.setAttribute('width', 10); bandaC.setAttribute('height', 406);
+      bandaC.style.opacity = t > T5 + .2 && pc < 1 ? 1 : 0;
+      porAmbas.write(P(t, T5 + .2, .6) * (1 - P(t, T6, .3)));
+      l2D.write(P(t, T5 + 2.2, .5) * (1 - P(t, T6, .4)));
+      // la tira de las rayas: filas en el paso del "¿alcanza?", columnas junto con la foto
+      const fueraM = 1 - P(t, T6, .4);
+      mini.forEach((c, i) => c.alpha([P(t, TA + .5, .6), P(t, TA + 1.2, .6), P(t, T5 + .4, .6)][i] * fueraM));
+      miniF.forEach((f, i) => { f.grow([P(t, TA + .9, .4), P(t, T5 + .2, .4)][i]); f.alpha(fueraM); });
+      miniL.forEach((l, i) => l.write([P(t, TA + .9, .4), P(t, T5 + .2, .4)][i] * fueraM));
+      miniN.forEach((l, i) => l.write([P(t, TA + .6, .5), P(t, TA + 1.5, .7), P(t, T5 + .6, .6)][i] * fueraM));
+      // 6: el rombo
+      filas.pos(lerp(1440, R.f[0], pr), lerp(415, R.f[1], pr), lerp(400, R.f[2], pr));
+      dosD.pos(lerp(1440, R.d[0], pr), lerp(415, R.d[1], pr), lerp(400, R.d[2], pr));
+      aF.alpha(1 - pr); aFl.alpha(1 - pr);
+      const pcol = P(t, T6 + 1.2, .8); cols.alpha(pcol);
+      rombo.forEach((r, i) => { const p = P(t, T6 + .9 + (i % 2 ? .6 : 0) + (i > 1 ? .9 : 0), .5); r.fl.grow(p); r.tx.write(p); });
+      ley(t);
+    },
+  };
+  return yo;
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   B1  ¿Qué es un punto del espectro 2D? Una onda plana (rayas) ↔ un par de puntos.
+   ════════════════════════════════════════════════════════════════════════════ */
+slide('ondas-2d', g => {
+  if (!FOTO) return sinDatos(g);
+  const { n, u } = FOTO;
+  const titulo = new Txt(g, '¿Qué es un punto del espectro 2D?', { size: 54, x: 70, y: 80 });
+  const F = marco(g, { izq: 'espacio real  ·  $(x, y)$', der: 'frecuencias  ·  $(k_x, k_y)$' });
+  const L = 480, CI = [480, 545], CD = [1440, 545], KMAX = 30, ESC = L / 2 / KMAX;   // px por oscilación
+  // una onda plana: un gradiente gris que se repite cada período, en la dirección del vector de onda
+  const defs = E('defs', {}, g);
+  const ondas = ['ondaA', 'ondaB'].map(id => {
+    const gr = E('linearGradient', { id, gradientUnits: 'userSpaceOnUse', spreadMethod: 'repeat' }, defs);
+    for (let i = 0; i <= 24; i++) { const c = Math.round(255 * (.5 + .5 * Math.cos(2 * Math.PI * i / 24))); E('stop', { offset: i / 24, 'stop-color': `rgb(${c},${c},${c})` }, gr); }
+    const r = E('rect', { x: CI[0] - L / 2, y: CI[1] - L / 2, width: L, height: L, fill: `url(#${id})` }, g);
+    return { gr, r };
+  });
+  const bordeI = E('rect', { x: CI[0] - L / 2, y: CI[1] - L / 2, width: L, height: L, fill: 'none' }, g);
+  Object.assign(bordeI.style, { stroke: C('tenue'), strokeWidth: 2 });
+  function ponerOnda(o, ciclos, th) {   // ciclos a lo ancho de la imagen; th = dirección del vector de onda (en pantalla)
+    const per = L / Math.max(ciclos, .01);
+    o.gr.setAttribute('x1', CI[0]); o.gr.setAttribute('y1', CI[1]);
+    o.gr.setAttribute('x2', CI[0] + per * Math.cos(th)); o.gr.setAttribute('y2', CI[1] + per * Math.sin(th));
+  }
+  // la foto y su espectro, para el final
+  const foto = new Cuadro(g, URLS.gris(u, n), { cx: CI[0], cy: CI[1], lado: L });
+  const espFoto = new Cuadro(g, URLS.k(espLog(transformar(u, n), n, 'xy', 4), n), { cx: CD[0], cy: CD[1], lado: L });
+  // el plano (k_x, k_y): y hacia abajo, como las filas de la imagen
+  const bordeD = E('rect', { x: CD[0] - L / 2, y: CD[1] - L / 2, width: L, height: L, fill: 'none' }, g);
+  Object.assign(bordeD.style, { stroke: C('tenue'), strokeWidth: 2 });
+  const ejeKx = new Arrow(g, CD[0] - L / 2 - 10, CD[1], CD[0] + L / 2 + 30, CD[1], { color: 'ax', width: 2.5, head: 16 });
+  const ejeKy = new Arrow(g, CD[0], CD[1] - L / 2 - 10, CD[0], CD[1] + L / 2 + 30, { color: 'ax', width: 2.5, head: 16 });
+  const lKx = new Tex(g, 'k_x', { size: 36, x: CD[0] + L / 2 + 44, y: CD[1] + 12, color: 'ax' });
+  const lKy = new Tex(g, 'k_y', { size: 36, x: CD[0] + 14, y: CD[1] + L / 2 + 46, color: 'ax' });
+  const ejeX = new Arrow(g, CI[0] - L / 2, CI[1] - L / 2 - 22, CI[0] - L / 2 + 80, CI[1] - L / 2 - 22, { color: 'dim', width: 2.5, head: 14 });
+  const ejeY = new Arrow(g, CI[0] - L / 2 - 22, CI[1] - L / 2, CI[0] - L / 2 - 22, CI[1] - L / 2 + 80, { color: 'dim', width: 2.5, head: 14 });
+  const lX = new Tex(g, 'x', { size: 32, x: CI[0] - L / 2 + 96, y: CI[1] - L / 2 - 12, color: 'dim' });
+  const lY = new Tex(g, 'y', { size: 32, x: CI[0] - L / 2 - 30, y: CI[1] - L / 2 + 114, anchor: 'middle', color: 'dim' });
+  const puntos = [0, 1].map(() => [0, 1].map(() => { const c = E('circle', { r: 12 }, g); c.style.fill = C('k'); return c; }));
+  const aF = new Arrow(g, 760, CD[1], 1160, CD[1]), tF = tapa(g, 960, CD[1] - 36, 60, 50);
+  const aFl = new Tex(g, '\\F', { size: 52, x: 960, y: CD[1] - 24, anchor: 'middle' });
+  const fA = new Tex(g, '\\class{cx}{u} = \\cos(k_x x + k_y y)', { size: 42, x: CI[0], y: 900, anchor: 'middle' });
+  const fB = new Tex(g, '\\class{cx}{u} = \\cos(\\mathbf{k}_1 \\cdot \\mathbf{x}) + \\cos(\\mathbf{k}_2 \\cdot \\mathbf{x})', { size: 42, x: CI[0], y: 900, anchor: 'middle' });
+  const fK = new Tex(g, '\\class{ck}{\\pm (k_x, k_y)}', { size: 42, x: CD[0], y: 900, anchor: 'middle' });
+  const expMas = new Tex(g, '\\tfrac12\\, e^{i\\mathbf{k} \\cdot \\mathbf{x}}', { size: 34, x: CD[0] + 6 * ESC + 4, y: CD[1] - 30, color: 'k' });
+  const expMenos = new Tex(g, '\\tfrac12\\, e^{-i\\mathbf{k} \\cdot \\mathbf{x}}', { size: 34, x: CD[0] - 6 * ESC - 4, y: CD[1] + 62, anchor: 'end', color: 'k' });
+  const arrastrar = new Txt(g, '(los puntos se pueden arrastrar)', { size: 26, x: CD[0] + L / 2, y: CD[1] - L / 2 - 12, anchor: 'end', italic: true, color: 'dim' });
+  // anotaciones sobre el espectro de la foto
+  const anillo = E('circle', { cx: CD[0], cy: CD[1], r: 46, fill: 'none' }, g);
+  Object.assign(anillo.style, { stroke: C('fg'), strokeWidth: 3, strokeDasharray: '8 7' });
+  const nCentro = new Txt(g, 'formas grandes', { size: 30, x: CD[0] - 60, y: CD[1] - 64, anchor: 'end', italic: true });
+  const nLejos = new Txt(g, 'bordes y detalles', { size: 30, x: CD[0] + L / 2 - 14, y: CD[1] + L / 2 - 18, anchor: 'end', italic: true });
+  const ley = leyendas(g, [
+    ['una onda plana: rayas en la imagen  →  un par de puntos en el espectro', .4, 1.6],
+    ['¿por qué dos? la imagen es real: $\\cos(\\mathbf{k} \\cdot \\mathbf{x}) = \\tfrac12\\, e^{i\\mathbf{k} \\cdot \\mathbf{x}} + \\tfrac12\\, e^{-i\\mathbf{k} \\cdot \\mathbf{x}}$, y cada exponencial es un punto', 1.8, 4.0],
+    ['si giran las rayas, giran los puntos: apuntan hacia donde cambia la onda', 4.2, 6.2],
+    ['rayas más finas  →  puntos más lejos del centro', 6.4, 8.2],
+    ['dos ondas sumadas  →  dos pares de puntos (transformar es lineal)', 8.4, 10.4],
+    ['una foto es una suma de muchas ondas: cerca del centro, lo grueso; lejos, los bordes y los detalles', 10.8],
+  ], { size: 38 });
+  // arrastrar un punto cambia la onda (en los pasos de las rayas)
+  let manual = null, tUlt = 0, arrastra = false;
+  const zona = E('rect', { x: CD[0] - L / 2, y: CD[1] - L / 2, width: L, height: L, fill: 'transparent' }, g);
+  zona.style.cursor = 'grab';
+  const kDesde = e => {
+    const pt = stage.createSVGPoint(); pt.x = e.clientX; pt.y = e.clientY;
+    const q = pt.matrixTransform(stage.getScreenCTM().inverse()), dx = q.x - CD[0], dy = q.y - CD[1];
+    return { ciclos: clamp(Math.hypot(dx, dy) / ESC, 1, KMAX), th: Math.atan2(dy, dx) };
+  };
+  zona.addEventListener('pointerdown', e => { e.stopPropagation(); arrastra = true; zona.setPointerCapture(e.pointerId); manual = kDesde(e); yo.render(tUlt); });
+  zona.addEventListener('pointermove', e => { if (!arrastra) return; manual = kDesde(e); yo.render(tUlt); });
+  zona.addEventListener('pointerup', () => arrastra = false);
+  zona.addEventListener('click', e => e.stopPropagation());
+  const TP = 1.6, T1 = 4.0, T2 = 6.2, T3 = 8.2, T4 = 10.4;
+  const yo = {
+    steps: [1.6, 2.4, 2.2, 2.0, 2.2, 2.6],
+    reset() { manual = null; },
+    render(t) {
+      tUlt = t;
+      titulo.write(P(t, 0, .8)); F.show(t > 0 ? 1 : 0);
+      const rayas = P(t, .1, .6) * (1 - P(t, T4, .8));
+      // onda A: gira y se afina (o la que se eligió arrastrando); onda B: aparece al sumar
+      let ciclos = lerp(6, 14, P(t, T2, 1.4)), th = lerp(0, -35 * Math.PI / 180, P(t, T1, 1.6));
+      if (manual) ({ ciclos, th } = manual);
+      const pB = P(t, T3, 1.2), cB = 5, thB = 55 * Math.PI / 180;
+      ponerOnda(ondas[0], ciclos, th); ponerOnda(ondas[1], cB, thB);
+      ondas[0].r.style.opacity = rayas; ondas[1].r.style.opacity = .5 * pB * rayas;
+      bordeI.style.opacity = rayas;
+      ejeX.grow(P(t, .3, .5)); ejeY.grow(P(t, .3, .5)); lX.write(P(t, .5, .4)); lY.write(P(t, .5, .4));
+      aF.grow(P(t, .4, .5)); aFl.write(P(t, .5, .4)); tF.style.opacity = t >= .5 ? 1 : 0;
+      ejeKx.grow(P(t, .5, .5)); ejeKy.grow(P(t, .5, .5)); lKx.write(P(t, .7, .4)); lKy.write(P(t, .7, .4));
+      bordeD.style.opacity = P(t, .5, .5);
+      const pts = [[ciclos, th, P(t, .8, .5)], [cB, thB, pB]];
+      puntos.forEach((par, i) => par.forEach((c, s) => {
+        const [k, a, p] = pts[i], sg = s ? -1 : 1;
+        c.setAttribute('cx', CD[0] + sg * ESC * k * Math.cos(a)); c.setAttribute('cy', CD[1] + sg * ESC * k * Math.sin(a));
+        c.setAttribute('r', 12 * clamp(p * 1.5)); c.style.opacity = (i ? .75 : 1) * p * (1 - P(t, T4, .6));
+      }));
+      fA.write(P(t, .6, .8) * (1 - P(t, T3, .4))); fB.write(P(t, T3 + .4, .9) * (1 - P(t, T4, .4)));
+      fK.write(P(t, .9, .6) * (1 - P(t, T4, .4)));
+      arrastrar.write(P(t, 1.0, .6) * (1 - P(t, T4, .4)));
+      zona.style.pointerEvents = t <= T4 ? 'auto' : 'none';
+      // 4: la foto y su espectro
+      const pf = P(t, T4, 1); foto.alpha(pf); espFoto.alpha(pf);
+      [ejeKx, ejeKy, lKx, lKy].forEach(o => o.alpha(1 - .6 * pf)); bordeD.style.opacity = P(t, .5, .5) * (1 - pf);
+      anillo.style.opacity = P(t, T4 + 1.0, .5); anillo.setAttribute('r', 46 * (.6 + .4 * P(t, T4 + 1.0, .5)));
+      nCentro.write(P(t, T4 + 1.2, .6)); nLejos.write(P(t, T4 + 1.6, .6));
+      // 1: cada punto es una exponencial compleja (se van cuando los puntos empiezan a moverse)
+      const pPar = P(t, TP + .3, .7) * (1 - P(t, T1, .3)) * (manual ? 0 : 1);
+      expMas.write(pPar); expMenos.write(pPar);
+      ley(t);
+    },
+  };
+  return yo;
+});
+
+/* ── el marco de la receta, con imágenes cuadradas en vez de curvas ───────────── */
+const kIdx = (i, n) => i < n / 2 ? i : i - n;   // índice de la FFT → frecuencia (con signo)
+function multiplicar(z, n, H) {   // H(kx, ky) · ẑ
+  const re = new Float64Array(n * n), im = new Float64Array(n * n);
+  for (let j = 0; j < n; j++) for (let l = 0; l < n; l++) {
+    const i = j * n + l, h = H(kIdx(l, n), kIdx(j, n)); re[i] = z.re[i] * h; im[i] = z.im[i] * h;
+  }
+  return { re, im };
+}
+function antitransformar(z, n) { const re = Float64Array.from(z.re), im = Float64Array.from(z.im); ifft2(re, im, n); return re; }
+function mapaH(H, n) {   // H en el plano (k_x, k_y), centrado, llevado a [0, 1]
+  const v = new Float64Array(n * n); let mx = 0;
+  for (let j = 0; j < n; j++) for (let l = 0; l < n; l++) mx = Math.max(mx, v[j * n + l] = H(l - n / 2, j - n / 2));
+  return v.map(x => x / mx);
+}
+function marcoImg(g) {
+  const S = 260, POS = { TL: [480, 340], TR: [1440, 340], BR: [1440, 730], BL: [480, 730] };
+  const A = {};
+  A.F = new Arrow(g, 650, 340, 1270, 340); A.tF = tapa(g, 960, 304, 60, 50);
+  A.Fl = new Tex(g, '\\F', { size: 52, x: 960, y: 316, anchor: 'middle' });
+  A.Fi = new Arrow(g, 1270, 730, 650, 730); A.tFi = tapa(g, 960, 688, 80, 50);
+  A.Fil = new Tex(g, '\\F^{-1}', { size: 52, x: 960, y: 706, anchor: 'middle' });
+  A.H = new Arrow(g, 1440, 488, 1440, 572, { color: 'h' });
+  A.por = new Tex(g, '\\times', { size: 46, x: 1468, y: 545, color: 'h' });
+  A.L = new Arrow(g, 480, 488, 480, 572, { dash: '9 9', color: 'dim' });
+  A.tapas = () => { A.tF.style.opacity = A.Fl.parts[0].style.visibility === 'visible' ? 1 : 0; A.tFi.style.opacity = A.Fil.parts[0].style.visibility === 'visible' ? 1 : 0; };
+  const cuadro = (urls, p, o = {}) => new Cuadro(g, urls, { cx: POS[p][0], cy: POS[p][1], lado: S, ...o });
+  const rot = (s, p, col) => new Tex(g, s, { size: 36, x: POS[p][0] - S / 2, y: POS[p][1] - S / 2 - 12, color: col });
+  return { S, POS, A, cuadro, rot };
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   B2  Filtrar imágenes = convolucionar: u ∗ h = g  ⟷  û · ĥ = ĝ. El núcleo h, bien grande.
+   ════════════════════════════════════════════════════════════════════════════ */
+// núcleos clásicos: [fila, columna, valor] alrededor del origen
+const NUCLEOS = (() => {
+  const gauss = [], caja = [], mov = [], s = 2.5;
+  for (let j = -8; j <= 8; j++) for (let l = -8; l <= 8; l++) gauss.push([j, l, Math.exp(-(j * j + l * l) / (2 * s * s))]);
+  const sg = gauss.reduce((a, c) => a + c[2], 0); gauss.forEach(c => c[2] /= sg);
+  for (let j = -3; j <= 3; j++) for (let l = -3; l <= 3; l++) caja.push([j, l, 1 / 49]);
+  for (let l = -7; l <= 7; l++) mov.push([0, l, 1 / 15]);
+  const de3 = m => m.flatMap((f, j) => f.map((v, l) => [j - 1, l - 1, v])).filter(c => c[2] !== 0);
+  return [
+    { nombre: 'gaussiano', que: 'desenfoca', h: gauss },
+    { nombre: 'caja', que: 'promedia', h: caja },
+    { nombre: 'movimiento', que: 'barre de costado', h: mov },
+    { nombre: 'laplaciano', que: 'bordes', h: de3([[0, 1, 0], [1, -4, 1], [0, 1, 0]]), signo: true },
+    { nombre: 'Sobel', que: 'bordes verticales', h: de3([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]]), signo: true },
+    { nombre: 'realce', que: 'resalta detalles', h: de3([[0, -1, 0], [-1, 5, -1], [0, -1, 0]]) },
+  ];
+})();
+// Convolucionar "a mano": el núcleo recorre la imagen y en cada píxel multiplica y suma. Cuántas cuentas son.
+slide('convolucion', g => {
+  if (!FOTO) return sinDatos(g);
+  const { n, u } = FOTO, m = 64, b = n / m;
+  // Tilo a 64 × 64 (promedios de 4 × 4), para que se vean los píxeles; núcleo 3 × 3 (gaussiano chiquito, ÷ 16)
+  const u64 = Float64Array.from({ length: m * m }, (_, i) => {
+    const r = Math.floor(i / m), c = i % m; let a = 0;
+    for (let j = 0; j < b; j++) for (let l = 0; l < b; l++) a += u[(r * b + j) * n + c * b + l];
+    return Math.round(255 * a / (b * b));
+  });
+  const K = [[1, 2, 1], [2, 4, 2], [1, 2, 1]];
+  const px = (r, c) => u64[clamp(r, 0, m - 1) * m + clamp(c, 0, m - 1)];   // bordes: se repite el último píxel
+  const g64 = u64.map((_, i) => { const r = Math.floor(i / m), c = i % m; let a = 0; for (let j = -1; j <= 1; j++) for (let l = -1; l <= 1; l++) a += K[j + 1][l + 1] * px(r + j, c + l); return Math.round(a / 16); });
+  const titulo = new Txt(g, '3  ·  Filtrar imágenes: convolucionar', { size: 54, x: 70, y: 80 });
+  const L = 520, CU = [320, 500], CG = [1600, 500], L2 = 300, Y2 = 330;   // en el paso del costo se achican y suben
+  const imgU = new Cuadro(g, URLS.gris(u64.map(v => v / 255), m), { cx: CU[0], cy: CU[1], lado: L, pixelado: true });
+  const imgG = new Cuadro(g, URLS.gris(g64.map(v => v / 255), m), { cx: CG[0], cy: CG[1], lado: L, pixelado: true });
+  const marcoG = E('rect', { fill: 'none' }, g);
+  Object.assign(marcoG.style, { stroke: C('tenue'), strokeWidth: 2 });
+  const lU = new Tex(g, 'u', { size: 40, color: 'x' }), lG = new Tex(g, 'g = u \\ast h', { size: 40, color: 'x' });
+  // la ventana sobre u, el píxel que se escribe en g, y el zoom del medio
+  const ven = E('rect', { fill: 'none' }, g); Object.assign(ven.style, { stroke: C('h'), strokeWidth: 3.5 });
+  const sal = E('rect', { fill: 'none' }, g); Object.assign(sal.style, { stroke: C('h'), strokeWidth: 3.5 });
+  const CZ = 96, PZ = [800, 430], KZ = [1120, 430];
+  const lineas = [0, 1].map(() => new Curve(g, null, { color: 'tenue', width: 2, dash: '6 6' }));
+  const grilla = (cx, cy, nombre) => {
+    const gg = E('g', {}, g), cel = [];
+    for (let j = 0; j < 3; j++) for (let l = 0; l < 3; l++) {
+      const r = E('rect', { x: cx - 1.5 * CZ + l * CZ, y: cy - 1.5 * CZ + j * CZ, width: CZ, height: CZ }, gg); Object.assign(r.style, { stroke: '#9a9a9a', strokeWidth: 1.5 });
+      const t = E('text', { x: cx - CZ + l * CZ, y: cy - CZ + j * CZ + 11, 'font-size': 32, 'text-anchor': 'middle' }, gg);
+      cel.push({ r, t });
+    }
+    new Tex(gg, nombre, { size: 36, x: cx - 1.5 * CZ, y: cy - 1.5 * CZ - 14, color: 'x' });
+    return { gg, cel };
+  };
+  const zP = grilla(...PZ, '\\text{vecinos}'), zK = grilla(...KZ, 'h \\;(\\div 16)');
+  zK.cel.forEach((c, i) => { const v = K[Math.floor(i / 3)][i % 3], q = Math.round(255 * (1 - v / 5)); c.r.style.fill = `rgb(${q},${q},${q})`; c.t.textContent = v; c.t.style.fill = v > 2 ? '#ffffff' : '#141414'; });
+  const por = new Tex(g, '\\times', { size: 50, x: 960, y: PZ[1] + 16, anchor: 'middle' });
+  const textoSuma = new Txt(g, '', { size: 38, x: 960, y: 670, anchor: 'middle' });
+  const cuenta = new Txt(g, '', { size: 34, x: 960, y: 770, anchor: 'middle', color: 'dim' });
+  // costo para Tilo en 256 × 256: directa (N²M²) contra FFT (~3 transformadas de N² log₂ N² cuentas)
+  const N2 = n * n, FFTc = 3 * N2 * Math.log2(N2);
+  const aB = { x0: 520, x1: 1640, y0: 600, lo: 5, hi: 9 }, XB = v => lerp(aB.x0, aB.x1, (Math.log10(v) - aB.lo) / (aB.hi - aB.lo));
+  const barras = [3, 7, 15, 31, 63].map((M, i) => {
+    const y = aB.y0 + i * 40, v = N2 * M * M;
+    const r = E('rect', { x: aB.x0, y, height: 28, width: 0 }, g); r.style.fill = C('dim');
+    return { r, v, et: new Mix(g, `$${M} \\times ${M}$`, { size: 28, x: aB.x0 - 16, y: y + 23, anchor: 'end' }),
+      val: new Txt(g, v >= 1e6 ? `${fmt(v / 1e6, v < 1e7 ? 1 : 0)} millones` : `${fmt(v / 1e3)} mil`, { size: 26, x: XB(v) + 12, y: y + 22, color: 'dim' }) };
+  });
+  const tB = new Txt(g, 'directa, para Tilo en 256 × 256, según el núcleo:', { size: 28, x: aB.x0 - 16 - 110, y: aB.y0 - 16, italic: true, color: 'dim' });
+  const lFFT = new Curve(g, [[XB(FFTc), aB.y0 - 8], [XB(FFTc), aB.y0 + 5 * 40]], { color: 'h', width: 4, dash: '10 7' });
+  const tFFT = new Txt(g, `con FFT: ${fmt(FFTc / 1e6, 1)} millones, sea cual sea el núcleo`, { size: 28, x: XB(FFTc) + 12, y: aB.y0 + 5 * 40 + 26, color: 'h' });
+  const ley = leyendas(g, [
+    ['convolucionar "a mano": el núcleo $h$ recorre la imagen', .3, 1.4],
+    ['el núcleo $h$ es una plantilla chica de pesos: en cada píxel, multiplicamos los vecinos por los pesos y sumamos', 1.6, 5.0],
+    ['y así con cada píxel de la imagen: 9 multiplicaciones por píxel', 5.2, 7.4],
+    ['núcleo de $M \\times M$: $N^2 M^2$ cuentas  ·  con la FFT, $\\sim N^2 \\log N$ y no depende de $M$', 7.6],
+  ], { size: 36, y: 1045 });
+  const T1 = 1.4, TS = 5.0, TC = 7.4, DS = 2.0;   // lentos · barrido · costo
+  // posición del núcleo: los primeros píxeles despacio, después barre el resto
+  const LENTOS = 8, DL = .4;
+  const indice = t => {
+    const s = t - T1; if (s < 0) return -1; if (s < LENTOS * DL) return Math.floor(s / DL); if (t <= TS) return LENTOS - 1;
+    return Math.min(LENTOS + m * m - 1, LENTOS + Math.floor((t - TS) / DS * m * m));
+  };
+  const R0 = 20, C0 = 26;   // los lentos arrancan en el medio de la cara (más interesante que la esquina)
+  const posDe = i => i < LENTOS ? [R0, C0 + i] : [Math.floor((i - LENTOS) / m), (i - LENTOS) % m];
+  return {
+    steps: [1.4, 3.6, 2.4, 2.6],
+    render(t) {
+      titulo.write(P(t, 0, .8));
+      // tamaño y lugar de las dos imágenes (se achican para el paso del costo)
+      const pS = P(t, TC, .8), L_ = lerp(L, L2, pS), cy = lerp(CU[1], Y2, pS), celda = L_ / m;
+      imgU.pos(CU[0], cy, L_); imgG.pos(CG[0], cy, L_);
+      for (const [k, v] of Object.entries({ x: CG[0] - L_ / 2, y: cy - L_ / 2, width: L_, height: L_ })) marcoG.setAttribute(k, v);
+      lU.at(CU[0] - L_ / 2, cy - L_ / 2 - 14); lG.at(CG[0] - L_ / 2, cy - L_ / 2 - 14);
+      imgU.alpha(P(t, .1, .6)); lU.write(P(t, .3, .5)); marcoG.style.opacity = P(t, .4, .5); lG.write(P(t, .6, .5));
+      const i = indice(t), hay = i >= 0 && t <= TC ? 1 : 0;
+      const [r, c] = posDe(Math.max(i, 0));
+      // g se llena: en los lentos, sólo esos píxeles; después, por filas
+      if (i < 0) imgG.recortar([]);
+      else if (i < LENTOS) imgG.recortar([[(C0) / m, R0 / m, (C0 + i + 1) / m, (R0 + 1) / m]]);
+      else imgG.recortar([[0, 0, 1, r / m], [0, r / m, (c + 1) / m, (r + 1) / m], [C0 / m, R0 / m, (C0 + LENTOS) / m, (R0 + 1) / m]]);
+      const x0 = CU[0] - L_ / 2, y0 = cy - L_ / 2;
+      for (const [el, xx, yy, w] of [[ven, x0 + (c - 1) * celda, y0 + (r - 1) * celda, 3 * celda], [sal, CG[0] - L_ / 2 + c * celda, y0 + r * celda, celda]]) {
+        el.setAttribute('x', xx); el.setAttribute('y', yy); el.setAttribute('width', w); el.setAttribute('height', w); el.style.opacity = hay;
+      }
+      const zoom = hay * P(t, T1, .4);
+      lineas[0].set([[x0 + (c + 2) * celda, y0 + (r - 1) * celda], [PZ[0] - 1.5 * CZ, PZ[1] - 1.5 * CZ]]).alpha(zoom);
+      lineas[1].set([[x0 + (c + 2) * celda, y0 + (r + 2) * celda], [PZ[0] - 1.5 * CZ, PZ[1] + 1.5 * CZ]]).alpha(zoom);
+      let acc = 0;
+      zP.cel.forEach((q, k) => {
+        const v = px(r + Math.floor(k / 3) - 1, c + k % 3 - 1); acc += v * K[Math.floor(k / 3)][k % 3];
+        q.r.style.fill = `rgb(${v},${v},${v})`; q.t.textContent = v; q.t.style.fill = v < 128 ? '#ffffff' : '#141414';
+      });
+      [zP.gg, zK.gg].forEach(z => z.style.opacity = zoom); por.alpha(zoom);
+      textoSuma.t.textContent = `suma de los 9 productos ÷ 16 = ${Math.round(acc / 16)}`; textoSuma.alpha(zoom);
+      cuenta.at(960, lerp(770, Y2 + 10, pS));
+      const total = i < LENTOS ? Math.max(0, i + 1) : clamp(i - LENTOS + 1, LENTOS, m * m);
+      cuenta.t.textContent = `píxeles: ${fmt(total)} de ${fmt(m * m)}   ·   multiplicaciones: ${fmt(9 * total)}`;
+      cuenta.alpha(P(t, T1 + .3, .4));
+      // 2: el costo según el tamaño del núcleo
+      tB.write(P(t, TC, .6));
+      barras.forEach((bb, k) => { const p = P(t, TC + .2 + k * .15, .7); bb.r.setAttribute('width', (XB(bb.v) - aB.x0) * p); bb.et.write(P(t, TC + .1 + k * .15, .4)); bb.val.write(P(t, TC + .7 + k * .15, .4)); });
+      lFFT.create(P(t, TC + 1.4, .5)); tFFT.write(P(t, TC + 1.6, .7));
+      ley(t);
+    },
+  };
+});
+
+slide('filtrar-imagenes', g => {
+  if (!FOTO) return sinDatos(g);
+  const { n, u } = FOTO, N2 = n * n, z = transformar(u, n);
+  const titulo = new Txt(g, '3  ·  Filtrar imágenes: en frecuencias', { size: 54, x: 70, y: 80 });
+  const F = marco(g, { izq: 'espacio real  ·  $(x, y)$', der: 'frecuencias  ·  $(k_x, k_y)$' });
+  // tres filas: u ∗ h = g a la izquierda, û · ĥ = ĝ a la derecha
+  const S = 220, XL = 520, XR = 1400, YR = [290, 535, 780];
+  const cuadro = (urls, x, y, o = {}) => new Cuadro(g, urls, { cx: x, cy: y, lado: S, ...o });
+  const foto = cuadro(URLS.gris(u, n), XL, YR[0]), esp = cuadro(URLS.k(espLog(z, n), n), XR, YR[0]);
+  const flechas = YR.map((y, i) => {
+    const a = i < 2 ? new Arrow(g, 650, y, 1222, y) : new Arrow(g, 1222, y, 650, y);
+    const tp = tapa(g, 960, y - 36, i < 2 ? 60 : 80, 50), l = new Tex(g, i < 2 ? '\\F' : '\\F^{-1}', { size: 50, x: 960, y: y - 22, anchor: 'middle' });
+    return { a, tp, l };
+  });
+  const simb = (s, x, y, col) => new Tex(g, s, { size: 56, x, y: y + 18, anchor: 'middle', color: col });
+  const sAst = simb('\\ast', 382, YR[1]), sIgL = simb('=', 382, YR[2]), sPor = simb('\\times', 1263, YR[1], 'h'), sIgR = simb('=', 1263, YR[2]);
+  const rotI = (s, y, col) => new Tex(g, s, { size: 38, x: XL - S / 2 - 14, y: y - 64, anchor: 'end', color: col });
+  const rotD = (s, y, col) => new Tex(g, s, { size: 38, x: XR + S / 2 + 18, y: y - 64, color: col });
+  const lU = rotI('u', YR[0], 'x'), lH = rotI('h', YR[1], 'x'), lG = rotI('g', YR[2], 'x');
+  const lUk = rotD('|\\hat u|', YR[0], 'k'), lHk = rotD('|\\hat h|', YR[1], 'h'), lGk = rotD('|\\hat h\\, \\hat u|', YR[2], 'k');
+  const nombreH = new Txt(g, '', { size: 32, x: 350, y: YR[1] + 74, anchor: 'end' }), queH = new Txt(g, '', { size: 28, x: 350, y: YR[1] + 108, anchor: 'end', italic: true, color: 'dim' });
+  // el núcleo, ampliado: celdas en gris (gris medio = 0) y, si es chico, con sus valores
+  function dibujarNucleo(k, padre) {
+    const gN = E('g', {}, padre), R = Math.max(1, ...k.h.map(c => Math.max(Math.abs(c[0]), Math.abs(c[1])))) + 1;
+    const W = 2 * R + 1, c = S / W, x0 = XL - S / 2, y0 = YR[1] - S / 2, mx = Math.max(...k.h.map(c => Math.abs(c[2])));
+    const fondo = E('rect', { x: x0, y: y0, width: S, height: S }, gN); fondo.style.fill = k.signo || k.h.some(c => c[2] < 0) ? '#808080' : '#000000';
+    const conCero = k.signo || k.h.some(c => c[2] < 0);
+    for (const [j, l, v] of k.h) {
+      const q = conCero ? .5 + .5 * v / mx : v / mx, gr = Math.round(255 * q);
+      const r = E('rect', { x: x0 + (l + R) * c, y: y0 + (j + R) * c, width: c + .5, height: c + .5 }, gN); r.style.fill = `rgb(${gr},${gr},${gr})`;
+      if (W <= 7) { const t = E('text', { x: x0 + (l + R + .5) * c, y: y0 + (j + R + .5) * c + 9, 'font-size': 26, 'text-anchor': 'middle' }, gN); t.textContent = fmt(v); t.style.fill = q < .5 ? '#ffffff' : '#141414'; }
+    }
+    if (W <= 9) { let d = ''; for (let i = 0; i <= W; i++) d += `M${x0 + i * c},${y0}V${y0 + S}M${x0},${y0 + i * c}H${x0 + S}`; const p = E('path', { d, fill: 'none' }, gN); Object.assign(p.style, { stroke: '#9a9a9a', strokeWidth: 1.2 }); }
+    const b = E('rect', { x: x0, y: y0, width: S, height: S, fill: 'none' }, gN); Object.assign(b.style, { stroke: C('tenue'), strokeWidth: 2 });
+    return gN;
+  }
+  function calcular(i) {
+    const k = NUCLEOS[i], re = new Float64Array(N2), im = new Float64Array(N2);
+    for (const [j, l, v] of k.h) re[((j + n) % n) * n + (l + n) % n] = v;
+    fft2(re, im, n);
+    const modH = Float64Array.from(re, (v, q) => Math.hypot(v, im[q])), mh = Math.max(...modH);
+    const hc = new Float64Array(N2);
+    for (let j = 0; j < n; j++) for (let l = 0; l < n; l++) hc[j * n + l] = modH[((j + n / 2) % n) * n + (l + n / 2) % n] / mh;
+    const pr = { re: new Float64Array(N2), im: new Float64Array(N2) };
+    for (let q = 0; q < N2; q++) { pr.re[q] = z.re[q] * re[q] - z.im[q] * im[q]; pr.im[q] = z.re[q] * im[q] + z.im[q] * re[q]; }
+    const gg = antitransformar(pr, n);
+    let urlG;
+    if (k.signo) { const m99 = Float64Array.from(gg, Math.abs).sort()[Math.floor(.97 * N2)]; urlG = URLS.gris(gg.map(v => .5 + .5 * clamp(v / m99, -1, 1)), n); }
+    else urlG = URLS.gris(gg, n);
+    return { H: URLS.h(hc, n), prod: URLS.k(espLog(pr, n), n), g: urlG };
+  }
+  // dos juegos fijos (gaussiano y laplaciano) para la animación, y uno "en vivo" para los botones
+  const juego = i => { const c = calcular(i); return { i, nuc: dibujarNucleo(NUCLEOS[i], g), H: cuadro(c.H, XR, YR[1], { borde: 'h' }), prod: cuadro(c.prod, XR, YR[2]), g: cuadro(c.g, XL, YR[2]) }; };
+  const JG = juego(0), JL = juego(3);
+  const vivo = { nuc: E('g', {}, g), H: cuadro(URLS.h(new Float64Array(N2), n), XR, YR[1], { borde: 'h' }), prod: cuadro(URLS.gris(new Float64Array(N2), n), XR, YR[2]), g: cuadro(URLS.gris(new Float64Array(N2), n), XL, YR[2]) };
+  let elegido = null, tUlt = 0;
+  function elegir(i) {
+    elegido = i; const c = calcular(i);
+    vivo.nuc.replaceChildren(dibujarNucleo(NUCLEOS[i], vivo.nuc));
+    vivo.H.cambiar(c.H); vivo.prod.cambiar(c.prod); vivo.g.cambiar(c.g);
+    yo.render(tUlt);
+  }
+  // botones con los núcleos clásicos
+  const ctl = E('g', {}, g), yB = 944, wB = 200;
+  const botones = NUCLEOS.map((k, i) => {
+    const bx = 960 + (i - 2.5) * (wB + 14) - wB / 2, b = E('g', {}, ctl); b.style.cursor = 'pointer';
+    const r = E('rect', { x: bx, y: yB - 25, width: wB, height: 50, rx: 25 }, b);
+    const t = new Txt(b, k.nombre, { size: 30, x: bx + wB / 2, y: yB + 10, anchor: 'middle' });
+    b.addEventListener('pointerdown', e => e.stopPropagation());
+    b.addEventListener('click', e => { e.stopPropagation(); elegir(i); });
+    return { r, t };
+  });
+  const ley = leyendas(g, [
+    ['la foto y su espectro', .3, 1.4],
+    ['convolucionar con un núcleo $h$: cada píxel pasa a ser un promedio pesado de sus vecinos', 1.6, 3.8],
+    ['en frecuencias, convolucionar es multiplicar: $\\widehat{u \\ast h} = \\hat u \\, \\hat h$', 4.0, 6.2],
+    ['el laplaciano ($-4$ en el centro, $1$ en los vecinos): $|\\hat h|$ crece lejos del centro  →  bordes', 6.4, 8.4],
+    ['directo cuesta $\\sim N^2 M^2$ (núcleo de $M \\times M$); con la FFT, $\\sim N^2 \\log N$, sea cual sea el núcleo', 8.6],
+  ], { size: 34, y: 1040 });
+  const T1 = 1.4, T2 = 3.8, T3 = 6.2, T4 = 8.4;
+  const yo = {
+    steps: [1.4, 2.4, 2.4, 2.2, 2.0],
+    reset() { elegido = null; },
+    render(t) {
+      tUlt = t;
+      titulo.write(P(t, 0, .8)); F.show(t > 0 ? 1 : 0);
+      foto.alpha(P(t, .1, .6)); lU.write(P(t, .3, .5));
+      flechas[0].a.grow(P(t, .5, .5)); flechas[0].l.write(P(t, .6, .4)); esp.alpha(P(t, .8, .6)); lUk.write(P(t, .9, .5));
+      // 1: el núcleo y su transformada · 2: el producto y la vuelta · 3: el laplaciano
+      const pL = P(t, T3, .8), enVivo = elegido !== null && t >= T4;
+      const peso = j => enVivo ? 0 : j === JG ? 1 - pL : pL;
+      sAst.write(P(t, T1, .5)); lH.write(P(t, T1 + .2, .5));
+      flechas[1].a.grow(P(t, T1 + .8, .5)); flechas[1].l.write(P(t, T1 + .9, .4)); lHk.write(P(t, T1 + 1.3, .5));
+      sPor.write(P(t, T2, .5)); sIgR.write(P(t, T2 + .3, .5)); lGk.write(P(t, T2 + .6, .5));
+      flechas[2].a.grow(P(t, T2 + .9, .5)); flechas[2].l.write(P(t, T2 + 1.0, .4));
+      sIgL.write(P(t, T2 + 1.3, .5)); lG.write(P(t, T2 + 1.4, .5));
+      for (const J of [JG, JL]) {
+        const w = peso(J), entra = J === JG ? 1 : 0;
+        J.nuc.style.opacity = w * (entra ? P(t, T1 + .2, .6) : 1);
+        J.H.alpha(w * (entra ? P(t, T1 + 1.1, .6) : 1));
+        J.prod.alpha(w * (entra ? P(t, T2 + .4, .6) : 1));
+        J.g.alpha(w * (entra ? P(t, T2 + 1.2, .6) : 1));
+      }
+      vivo.nuc.style.opacity = enVivo ? 1 : 0; [vivo.H, vivo.prod, vivo.g].forEach(o => o.alpha(enVivo ? 1 : 0));
+      const k = NUCLEOS[enVivo ? elegido : t >= T3 + .4 ? 3 : 0];
+      nombreH.t.textContent = k.nombre; queH.t.textContent = k.que; nombreH.write(P(t, T1 + .5, .6)); queH.write(P(t, T1 + .7, .6));
+      // 4: los botones
+      const hay = P(t, T4 + .3, .5);
+      ctl.style.opacity = hay; ctl.style.pointerEvents = hay > .5 ? 'auto' : 'none';
+      const activo = enVivo ? elegido : 3;
+      botones.forEach((b, i) => {
+        const on = i === activo;
+        Object.assign(b.r.style, { fill: on ? C('h') : 'transparent', fillOpacity: on ? .14 : 0, stroke: C(on ? 'h' : 'tenue'), strokeWidth: on ? 3 : 2 });
+        b.t.t.style.fill = C(on ? 'h' : 'dim');
+      });
+      ley(t);
+      flechas.forEach(f => f.tp.style.opacity = f.l.parts[0].style.visibility === 'visible' ? 1 : 0);
+    },
+  };
+  return yo;
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   B3  Comprimir: nos quedamos con los coeficientes más grandes. Dos paneles grandes:
+   Tilo (o su reconstrucción) y el espectro, con lo que apagamos tapado en gris.
+   ════════════════════════════════════════════════════════════════════════════ */
+function pngVelo(masc, n, tema) {   // gris opaco donde la máscara es 0, transparente donde es 1
+  const cv = document.createElement('canvas'); cv.width = cv.height = n;
+  const cx = cv.getContext('2d'), im = cx.createImageData(n, n), c = tema === 'claro' ? 214 : 58;
+  for (let i = 0; i < n * n; i++) im.data.set([c, c, c, masc[i] ? 0 : 255], 4 * i);
+  cx.putImageData(im, 0, 0);
+  return cv.toDataURL();
+}
+slide('comprimir', g => {
+  if (!FOTO) return sinDatos(g);
+  const { n, u } = FOTO, z = transformar(u, n), N2 = n * n;
+  const titulo = new Txt(g, '4  ·  Comprimir', { size: 54, x: 70, y: 80 });
+  const F = marco(g, { izq: 'espacio real  ·  $(x, y)$', der: 'frecuencias  ·  $(k_x, k_y)$' });
+  const L = 600, CI = [480, 545], CD = [1440, 545];
+  const mod = Float64Array.from({ length: N2 }, (_, i) => Math.hypot(z.re[i], z.im[i]));
+  const orden = Float64Array.from(mod).sort().reverse();
+  const normaU = Math.sqrt(u.reduce((s, v) => s + v * v, 0));
+  function comprimir(p) {   // fracción p de coeficientes (los de mayor módulo)
+    const tau = orden[Math.max(0, Math.round(p * N2) - 1)];
+    const re = new Float64Array(N2), im = new Float64Array(N2), mc = new Uint8Array(N2);
+    let quedan = 0;
+    for (let i = 0; i < N2; i++) if (mod[i] >= tau) { re[i] = z.re[i]; im[i] = z.im[i]; quedan++; }
+    for (let j = 0; j < n; j++) for (let l = 0; l < n; l++) mc[j * n + l] = mod[((j + n / 2) % n) * n + (l + n / 2) % n] >= tau;   // centrada
+    const gg = antitransformar({ re, im }, n);
+    let e = 0; for (let i = 0; i < N2; i++) e += (gg[i] - u[i]) ** 2;
+    return { g: URLS.gris(gg, n), velo: { claro: pngVelo(mc, n, 'claro'), oscuro: pngVelo(mc, n, 'oscuro') }, err: Math.sqrt(e) / normaU, apagados: N2 - quedan };
+  }
+  const PS = [.001, .01, .1], C3 = PS.map(comprimir);
+  const foto = new Cuadro(g, URLS.gris(u, n), { cx: CI[0], cy: CI[1], lado: L });
+  const esp = new Cuadro(g, URLS.k(espLog(z, n), n), { cx: CD[0], cy: CD[1], lado: L });
+  const recs = C3.map(c => new Cuadro(g, c.g, { cx: CI[0], cy: CI[1], lado: L }));
+  const velos = C3.map(c => new Cuadro(g, c.velo, { cx: CD[0], cy: CD[1], lado: L, pixelado: true }));
+  const vivo = { g: new Cuadro(g, C3[2].g, { cx: CI[0], cy: CI[1], lado: L }), velo: new Cuadro(g, C3[2].velo, { cx: CD[0], cy: CD[1], lado: L, pixelado: true }) };
+  const aF = new Arrow(g, 800, 440, 1120, 440), tF = tapa(g, 960, 404, 60, 50), aFl = new Tex(g, '\\F', { size: 52, x: 960, y: 416, anchor: 'middle' });
+  const aI = new Arrow(g, 1120, 650, 800, 650), tI = tapa(g, 960, 608, 80, 50), aIl = new Tex(g, '\\F^{-1}', { size: 52, x: 960, y: 626, anchor: 'middle' });
+  const lU = new Tex(g, 'u', { size: 40, x: CI[0] - L / 2, y: CI[1] - L / 2 - 14, color: 'x' }), lG = new Tex(g, 'g', { size: 40, x: CI[0] - L / 2, y: CI[1] - L / 2 - 14, color: 'x' });
+  const lE = new Tex(g, '|\\hat u|', { size: 40, x: CD[0] - L / 2, y: CD[1] - L / 2 - 14, color: 'k' });
+  const lH = new Mix(g, 'en gris, lo que apagamos: $\\class{ch}{\\Theta(|\\hat u| - \\tau)}$', { size: 32, x: CD[0] + L / 2, y: CD[1] - L / 2 - 14, anchor: 'end', color: 'dim' });
+  const yV = CI[1] + L / 2 + 44;
+  const etq = PS.map((p, i) => [
+    new Txt(g, `el ${fmt(p * 100, p < .01 ? 1 : 0)} % más grande: apagamos ${fmt(C3[i].apagados)} de ${fmt(N2)}`, { size: 32, x: CD[0], y: yV, anchor: 'middle', color: 'h' }),
+    new Txt(g, `error: ${fmt(C3[i].err * 100, 1)} %`, { size: 32, x: CI[0], y: yV, anchor: 'middle', color: 'x' }),
+  ]);
+  // slider (paso final): fracción en escala log, de 0,05 % a 100 %
+  const ctl = E('g', {}, g), sx0 = CD[0] - L / 2, sx1 = CD[0] + 40, yS = yV - 10;
+  const pista = E('line', { x1: sx0, x2: sx1, y1: yS, y2: yS, 'stroke-linecap': 'round' }, ctl);
+  Object.assign(pista.style, { stroke: C('tenue'), strokeWidth: 5 });
+  const perilla = E('circle', { cy: yS, r: 13 }, ctl); perilla.style.fill = C('h');
+  const valor = new Txt(ctl, '', { size: 32, x: sx1 + 30, y: yS + 11, color: 'h' });
+  const errV = new Txt(ctl, '', { size: 32, x: CI[0], y: yV, anchor: 'middle', color: 'x' });
+  const zona = E('rect', { x: sx0 - 20, y: yS - 24, width: sx1 - sx0 + 40, height: 48, fill: 'transparent' }, ctl);
+  zona.style.cursor = 'ew-resize';
+  const LMIN = Math.log10(5e-4), xP = p => lerp(sx0, sx1, (Math.log10(p) - LMIN) / -LMIN);
+  let pManual = null, tUlt = 0, arrastra = false;
+  const textoValor = (p, c) => `${fmt(p * 100, p < .01 ? 2 : p < .1 ? 1 : 0)} %  ·  apagamos ${fmt(c.apagados)}`;
+  function ponerP(p) {
+    pManual = p; const c = comprimir(p);
+    vivo.g.cambiar(c.g); vivo.velo.cambiar(c.velo);
+    valor.t.textContent = textoValor(p, c); errV.t.textContent = `error: ${fmt(c.err * 100, 1)} %`;
+    yo.render(tUlt);
+  }
+  const pDesde = e => {
+    const pt = stage.createSVGPoint(); pt.x = e.clientX; pt.y = e.clientY;
+    const q = pt.matrixTransform(stage.getScreenCTM().inverse());
+    return 10 ** (LMIN * (1 - clamp((q.x - sx0) / (sx1 - sx0))));
+  };
+  zona.addEventListener('pointerdown', e => { e.stopPropagation(); arrastra = true; zona.setPointerCapture(e.pointerId); ponerP(pDesde(e)); });
+  zona.addEventListener('pointermove', e => { if (arrastra) ponerP(pDesde(e)); });
+  zona.addEventListener('pointerup', () => arrastra = false);
+  zona.addEventListener('click', e => e.stopPropagation());
+  const ley = leyendas(g, [
+    ['Tilo y su espectro: casi todos los coeficientes son chiquitos (casi blancos)', .3, 1.4],
+    ['nos quedamos con los coeficientes más grandes y apagamos todo el resto', 1.6, 4.0],
+    ['con el 10 % de los coeficientes casi no se nota la diferencia', 5.6, 7.2],
+    ['JPEG hace esto (por bloques de $8 \\times 8$, con cosenos): de 65.536 números, guarda unos 3.300', 7.4],
+  ], { size: 36 });
+  const T1 = 1.4, T2 = 4.0, T3 = 5.6, T4 = 7.2;
+  const yo = {
+    steps: [1.4, 2.6, 1.6, 1.6, 2.4],
+    reset() { pManual = null; },
+    render(t) {
+      tUlt = t;
+      titulo.write(P(t, 0, .8)); F.show(t > 0 ? 1 : 0);
+      foto.alpha(P(t, .1, .6)); lU.write(P(t, .3, .5) * (1 - P(t, T1 + 1.2, .4)));
+      aF.grow(P(t, .4, .5)); aFl.write(P(t, .5, .4)); tF.style.opacity = t >= .5 ? 1 : 0;
+      esp.alpha(P(t, .6, .6)); lE.write(P(t, .7, .5));
+      // 1–3: 0,5 % → 2 % → 5 %
+      lH.write(P(t, T1 + .2, .8));
+      aI.grow(P(t, T1 + 1.0, .5)); aIl.write(P(t, T1 + 1.1, .4)); tI.style.opacity = t >= T1 + 1.1 ? 1 : 0;
+      lG.write(P(t, T1 + 1.4, .5));
+      const enVivo = pManual !== null && t >= T4;
+      const peso = [P(t, T1 + .2, .8) * (1 - P(t, T2, .6)), P(t, T2, .6) * (1 - P(t, T3, .6)), P(t, T3, .6)];
+      peso.forEach((w, i) => {
+        const ww = enVivo ? 0 : w;
+        velos[i].alpha(ww);
+        recs[i].alpha(enVivo ? 0 : i === 0 ? P(t, T1 + 1.3, .7) * (1 - P(t, T2, .6)) : w);
+        etq[i][0].write(Math.min(1, 3 * w) * (1 - P(t, T4, .4)));
+        etq[i][1].write(Math.min(1, 3 * w) * (i === 0 ? P(t, T1 + 1.3, .6) : 1) * (1 - P(t, T4, .4)));
+      });
+      vivo.g.alpha(enVivo ? 1 : 0); vivo.velo.alpha(enVivo ? 1 : 0);
+      // 4: JPEG y el slider
+      const hay = P(t, T4 + .4, .5);
+      ctl.style.opacity = hay; ctl.style.pointerEvents = hay > .5 ? 'auto' : 'none';
+      perilla.setAttribute('cx', xP(pManual ?? PS[2]));
+      if (pManual === null) { valor.t.textContent = textoValor(PS[2], C3[2]); errV.t.textContent = `error: ${fmt(C3[2].err * 100, 1)} %`; }
+      ley(t);
+    },
+  };
+  return yo;
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   B3'  ¿Por qué se puede comprimir? Las fotos son rarísimas.
+   ════════════════════════════════════════════════════════════════════════════ */
+slide('babel', g => {
+  if (!FOTO) return sinDatos(g);
+  const { n, u } = FOTO, N2 = n * n, r = rng(5);
+  const estatica = Float64Array.from({ length: N2 }, () => r());
+  const titulo = new Txt(g, '¿Por qué se puede comprimir?', { size: 54, x: 70, y: 80 });
+  const est = new Cuadro(g, URLS.gris(estatica, n), { cx: 330, cy: 345, lado: 250 });
+  const fot = new Cuadro(g, URLS.gris(u, n), { cx: 330, cy: 715, lado: 250 });
+  const lEst = new Txt(g, 'estática al azar', { size: 34, x: 330, y: 205, anchor: 'middle', color: 'ruido' });
+  const lFot = new Txt(g, 'una foto', { size: 34, x: 330, y: 575, anchor: 'middle', color: 'x' });
+  // |û| ordenados de mayor a menor (sin el promedio), relativos al más grande; ejes log-log
+  const ordenados = v => {
+    const z = transformar(v, n), m = Float64Array.from({ length: N2 - 1 }, (_, i) => Math.hypot(z.re[i + 1], z.im[i + 1])).sort().reverse();
+    return m.map(x => x / m[0]);
+  };
+  const oE = ordenados(estatica), oF = ordenados(u);
+  const ax = new Axes(g, { x0: 640, x1: 1720, y0: 230, y1: 800, xr: [0, Math.log10(N2)], yr: [-5, 0], log: true,
+    xticks: [[0, '1'], [2, '100'], [4, '10^4']], yticks: [[1, '1'], [1e-2, '10^{-2}'], [1e-4, '10^{-4}']] });
+  const lX = new Txt(g, 'coeficientes, del más grande al más chico', { size: 30, x: 1180, y: 862, anchor: 'middle', italic: true, color: 'dim' });
+  const lY = new Tex(g, '|\\hat u|', { size: 38, x: 662, y: 200, color: 'k' });
+  const muestra = o => { const pts = []; for (let e = 0; e <= Math.log10(o.length); e += .01) { const i = Math.min(o.length - 1, Math.round(10 ** e) - 1); pts.push([ax.X(Math.log10(i + 1)), ax.Y(o[i])]); } return pts; };
+  const cE = new Curve(g, muestra(oE), { color: 'ruido', width: 5 }), cF = new Curve(g, muestra(oF), { color: 'k', width: 5 });
+  const nE = new Txt(g, 'estática: todos parecidos', { size: 32, x: 1000, y: ax.Y(oE[2000]) - 40, italic: true, color: 'ruido' });
+  const nF = new Txt(g, 'foto: casi todos son chiquitos', { size: 32, x: 960, y: ax.Y(2e-4), italic: true, color: 'k' });
+  const x5 = ax.X(Math.log10(.05 * N2));
+  const corte = new Curve(g, [[x5, ax.y0], [x5, ax.yb]], { color: 'h', width: 3, dash: '10 8' });
+  const l5 = new Txt(g, 'el 5 % más grande', { size: 30, x: x5 - 10, y: ax.yb - 14, anchor: 'end', color: 'h' });
+  // cuántas imágenes hay, y Borges
+  const cuenta = new Tex(g, '256^{65.536} \\approx 10^{157.826}', { size: 76, x: 1180, y: 340, anchor: 'middle' });
+  const cuentaT = new Txt(g, 'imágenes posibles de 256 × 256 píxeles, en grises', { size: 34, x: 1180, y: 410, anchor: 'middle', italic: true, color: 'dim' });
+  const cuentaN = new Mix(g, '(los átomos del universo observable son unos $10^{80}$)', { size: 30, x: 1180, y: 462, anchor: 'middle', italic: true, color: 'dim' });
+  const cita = [
+    '«…la Biblioteca es total y […] sus anaqueles registran',
+    'todas las posibles combinaciones de los veintitantos',
+    'símbolos ortográficos (número, aunque vastísimo, no infinito)…»',
+  ].map((s, i) => new Txt(g, s, { size: 36, x: 1180, y: 600 + i * 50, anchor: 'middle', italic: true }));
+  const autor = new Txt(g, 'J. L. Borges, «La biblioteca de Babel» (1941)', { size: 30, x: 1180, y: 770, anchor: 'middle', color: 'dim' });
+  const lectura = new Mix(g, 'para leer: Brunton & Kutz, cap. 3 (las señales ralas y el compressed sensing)', { size: 28, x: 1720, y: 940, anchor: 'end', italic: true, color: 'dim' });
+  const ley = leyendas(g, [
+    ['¿cuál de las dos se puede comprimir?', .3, 1.4],
+    ['a la estática no hay nada que sacarle; a la foto, casi todo', 2.0, 4.0],
+    ['casi todas esas imágenes son estática: las fotos son rarísimas, y por eso se describen con pocos números', 4.6],
+  ], { size: 36 });
+  const T1 = 1.4, T2 = 4.0, T3 = 6.2;
+  return {
+    steps: [1.4, 2.6, 2.2, 2.4],
+    render(t) {
+      titulo.write(P(t, 0, .8));
+      est.alpha(P(t, .1, .6)); lEst.write(P(t, .2, .6)); fot.alpha(P(t, .4, .6)); lFot.write(P(t, .5, .6));
+      // 1: los coeficientes ordenados
+      const fuera = 1 - P(t, T2, .6);
+      ax.create(P(t, T1, .6)); lX.write(P(t, T1 + .2, .6)); lY.write(P(t, T1 + .2, .5));
+      cE.create(P(t, T1 + .4, 1.2)); cF.create(P(t, T1 + .6, 1.2));
+      nE.write(P(t, T1 + 1.4, .6)); nF.write(P(t, T1 + 1.7, .6));
+      corte.create(P(t, T1 + 2.0, .4)); l5.write(P(t, T1 + 2.1, .4));
+      [ax, lX, lY, cE, cF, nE, nF, corte, l5].forEach(o => o.alpha(fuera));
+      lectura.write(P(t, T1 + 1.6, .6)); lectura.alpha(fuera);
+      // 2: cuántas imágenes hay · 3: Borges
+      cuenta.write(P(t, T2 + .4, 1.2)); cuentaT.write(P(t, T2 + 1.2, .6)); cuentaN.write(P(t, T2 + 1.6, .6));
+      cita.forEach((c, i) => c.write(P(t, T3 + i * .4, .9))); autor.write(P(t, T3 + 1.4, .6));
+      ley(t);
+    },
+  };
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   B0'  ¿Y a color? Tres matrices; JPEG usa brillo + color y guarda el color con menos detalle.
+   ════════════════════════════════════════════════════════════════════════════ */
+function pngRGB(r, gr, b, n) {
+  const cv = document.createElement('canvas'); cv.width = cv.height = n;
+  const cx = cv.getContext('2d'), im = cx.createImageData(n, n);
+  for (let i = 0; i < n * n; i++) im.data.set([255 * clamp(r[i]), 255 * clamp(gr[i]), 255 * clamp(b[i]), 255], 4 * i);
+  cx.putImageData(im, 0, 0);
+  const u = cv.toDataURL(); return { claro: u, oscuro: u };
+}
+slide('color', g => {
+  if (!FOTO) return sinDatos(g);
+  const { n, rgb: [R, G, B] } = FOTO, N2 = n * n, cero = new Float64Array(N2);
+  const titulo = new Txt(g, '¿Y a color?', { size: 54, x: 70, y: 80 });
+  const tag = new Txt(g, '(una tangente)', { size: 32, x: 1850, y: 80, anchor: 'end', italic: true, color: 'dim' });
+  // brillo y color (YCbCr, como JPEG); el color se promedia en bloques de 4 × 4
+  const Y = R.map((r, i) => .299 * r + .587 * G[i] + .114 * B[i]);
+  const Cb = R.map((r, i) => -.1687 * r - .3313 * G[i] + .5 * B[i]), Cr = R.map((r, i) => .5 * r - .4187 * G[i] - .0813 * B[i]);
+  const bloques = (v, s = 4) => v.map((_, i) => {
+    const j0 = Math.floor(Math.floor(i / n) / s) * s, l0 = Math.floor(i % n / s) * s; let a = 0;
+    for (let j = j0; j < j0 + s; j++) for (let l = l0; l < l0 + s; l++) a += v[j * n + l];
+    return a / (s * s);
+  });
+  const Cb4 = bloques(Cb), Cr4 = bloques(Cr);
+  const Rr = Y.map((y, i) => y + 1.402 * Cr4[i]), Gr = Y.map((y, i) => y - .344136 * Cb4[i] - .714136 * Cr4[i]), Br = Y.map((y, i) => y + 1.772 * Cb4[i]);
+  const L0 = 460, CF = [340, 500], LC = 330, XS = [880, 1230, 1580], YC = 500;
+  const foto = new Cuadro(g, pngRGB(R, G, B, n), { cx: CF[0], cy: CF[1], lado: L0 });
+  const rec = new Cuadro(g, pngRGB(Rr, Gr, Br, n), { cx: CF[0], cy: CF[1], lado: L0 });
+  const canales = [[R, cero, cero], [cero, G, cero], [cero, cero, B]].map((c, i) => new Cuadro(g, pngRGB(...c, n), { cx: XS[i], cy: YC, lado: LC }));
+  const gris = v => URLS.gris(v, n), cc = v => URLS.gris(v.map(x => .5 + 3 * x), n);   // gris medio = sin color
+  const ycc = [gris(Y), cc(Cb4), cc(Cr4)].map((u, i) => new Cuadro(g, u, { cx: XS[i], cy: YC, lado: LC, pixelado: true }));
+  const igual = new Tex(g, '=', { size: 70, x: 642, y: YC + 22, anchor: 'middle' });
+  const nombres = (ls, col) => ls.map((s, i) => new Mix(g, s, { size: 34, x: XS[i], y: YC + LC / 2 + 50, anchor: 'middle', color: col[i] }));
+  const nRGB = nombres(['rojo', 'verde', 'azul'], ['fg', 'fg', 'fg']);
+  const nYCC = nombres(['brillo ($Y$)', 'color ($C_b$)', 'color ($C_r$)'], ['fg', 'fg', 'fg']);
+  const nRec = new Txt(g, 'reconstruida con el color en bloques de 4 × 4', { size: 28, x: CF[0], y: CF[1] + L0 / 2 + 44, anchor: 'middle', italic: true, color: 'dim' });
+  const ley = leyendas(g, [
+    ['una foto a color son tres matrices: se transforma (y se filtra, y se comprime) cada una por separado', 1.4, 4.0],
+    ['JPEG la pasa a brillo y color: el ojo ve poco detalle en el color, así que lo guarda con menos resolución', 4.4],
+  ], { size: 36 });
+  const T1 = 1.4, T2 = 4.0;
+  return {
+    steps: [1.4, 2.6, 2.8],
+    render(t) {
+      titulo.write(P(t, 0, .8)); tag.write(P(t, .2, .8));
+      foto.alpha(P(t, .2, .8));
+      // 1: rojo, verde y azul
+      igual.write(P(t, T1, .5));
+      const pY = P(t, T2, .8);
+      canales.forEach((c, i) => c.alpha(P(t, T1 + .3 + i * .25, .6) * (1 - pY))); nRGB.forEach((m, i) => { m.write(P(t, T1 + .5 + i * .25, .5)); m.alpha(1 - pY); });
+      // 2: brillo y color; la foto se rearma con el color "gastado"
+      ycc.forEach((c, i) => c.alpha(P(t, T2 + i * .25, .7))); nYCC.forEach((m, i) => m.write(P(t, T2 + .2 + i * .25, .5)));
+      rec.alpha(P(t, T2 + 1.2, .8)); nRec.write(P(t, T2 + 1.6, .6));
+      ley(t);
+    },
+  };
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   Síntesis: todo fue multiplicar por un H(k).
+   ════════════════════════════════════════════════════════════════════════════ */
+slide('sintesis', g => {
+  const tit = new Mix(g, 'Todo fue multiplicar por un $\\class{ch}{H(k)}$', { size: 54, x: 70, y: 80 });
+  const X1 = 200, X2 = 760, X3 = 1300, W = 380, ALTO = 70, Y0 = 290, DY = 108;
+  const cab = [['operación', X1], ['$\\class{ch}{H(k)}$', X2], ['$|\\class{ch}{H}|$ en función de $k$', X3]].map(([s, x]) => new Mix(g, s, { size: 34, x, y: 200, italic: true, color: 'dim' }));
+  const raya = new Curve(g, [[X1 - 20, 222], [X3 + W + 40, 222]], { color: 'tenue', width: 2 });
+  const gauss = k => Math.exp(-k * k / (2 * .28 * .28));
+  const FILAS = [
+    ['derivar', 'ik', k => Math.abs(k)],
+    ['pasa-bajos', '\\Theta(k_c - |k|)', k => Math.abs(k) < .45 ? 1 : 0],
+    ['umbral, comprimir', '\\Theta(|\\hat f(k)| - \\tau)', null],
+    ['desenfocar (núcleo gaussiano)', 'e^{-|\\mathbf{k}|^2/2\\sigma^2}', gauss],
+    ['bordes (laplaciano)', '-|\\mathbf{k}|^2', k => k * k],
+    ['convolucionar con un núcleo $h$', '\\hat h(\\mathbf{k})', null],
+  ].map(([op, h, f], i) => {
+    const y = Y0 + i * DY, base = y + 14;
+    const o = { op: new Mix(g, op, { size: 40, x: X1, y: y + 12 }), h: new Tex(g, h, { size: 44, x: X2, y: y + 14, color: 'h' }) };
+    o.eje = new Curve(g, [[X3, base], [X3 + W, base]], { color: 'tenue', width: 2 });
+    o.cero = new Curve(g, [[X3 + W / 2, base + 8], [X3 + W / 2, base - ALTO - 6]], { color: 'tenue', width: 2 });
+    if (!f) o.eje.g.style.display = o.cero.g.style.display = 'none';   // sin un dibujo fijo
+    const ks = Array.from({ length: 201 }, (_, j) => -1 + j / 100);
+    if (f) o.c = new Curve(g, ks.map(k => [X3 + (k + 1) / 2 * W, base - ALTO * f(k)]), { color: 'h', width: 4.5 });
+    return o;
+  });
+  const notas = [[2, 'depende de $\\hat f$: no es lineal'], [5, 'la transformada del núcleo (cualquiera)']].map(([i, s]) => new Mix(g, s, { size: 32, x: X3, y: Y0 + i * DY + 12, italic: true, color: 'dim' }));
+  const ley = leyendas(g, [['transformar  ·  multiplicar por $\\class{ch}{H(k)}$  ·  antitransformar', 6.0]], { size: 44 });
+  const T1 = 2.4, T2 = 3.8;
+  return {
+    steps: [2.4, 1.4, 3.2],
+    render(t) {
+      tit.write(P(t, 0, .9));
+      cab.forEach((c, i) => c.write(P(t, .3 + i * .15, .6))); raya.create(P(t, .3, .8));
+      const entra = [.6, 1.3, T1, T2, T2 + .6, T2 + 1.2];
+      FILAS.forEach((o, i) => {
+        const a = entra[i];
+        o.op.write(P(t, a, .6)); o.h.write(P(t, a + .2, .7));
+        o.eje.create(P(t, a + .3, .5)); o.cero.create(P(t, a + .3, .5));
+        o.c?.create(P(t, a + .5, .8));
+      });
+      notas[0].write(P(t, T1 + .4, .8)); notas[1].write(P(t, T2 + 1.6, .8));
+      ley(t);
+    },
+  };
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   Cierre: y hay mucho más. Ocho aplicaciones para explorar, cada una con un dibujito.
+   ════════════════════════════════════════════════════════════════════════════ */
+slide('mas-aplicaciones', g => {
+  const titulo = new Txt(g, 'Y hay mucho más', { size: 54, x: 70, y: 80 });
+  const sub = new Txt(g, 'para seguir explorando por su cuenta', { size: 34, x: 1850, y: 80, anchor: 'end', italic: true, color: 'dim' });
+  const XS = [270, 723, 1176, 1630], YS = [270, 640], W = 300, AL = 150;
+  const caja = (i, j) => ({ cx: XS[i], cy: YS[j], x0: XS[i] - W / 2, x1: XS[i] + W / 2, y0: YS[j] - AL / 2, y1: YS[j] + AL / 2 });
+  const r = rng(21);
+  const items = [];
+  // cada ítem: { dibujo: M, anima(p, t) opcional, nombre, desc }
+  const item = (i, j, nombre, desc, armar) => {
+    const b = caja(i, j), m = new M(g);
+    const anima = armar(m.g, b) || (() => {});
+    items.push({ m, anima, nombre: new Txt(g, nombre, { size: 34, x: b.cx, y: b.y1 + 52, anchor: 'middle' }),
+      desc: desc.map((d, k) => new Mix(g, d, { size: 26, x: b.cx, y: b.y1 + 90 + 32 * k, anchor: 'middle', italic: true, color: 'dim' })) });
+  };
+  // 1 · sintetizar sonido: una onda cuadrada que se arma sumando armónicos impares
+  item(0, 0, 'sintetizar sonido', ['sumando armónicos:', 'sintetizadores, autotune'], (pg, b) => {
+    const c = new Curve(pg, null, { width: 3.5 });
+    return p => {
+      const K = 1 + 2 * Math.floor(lerp(0, 7, p));
+      c.set(Array.from({ length: 241 }, (_, q) => q / 240).map(u => {
+        let y = 0; for (let k = 1; k <= K; k += 2) y += Math.sin(2 * Math.PI * k * 2 * u) / k;
+        return [lerp(b.x0, b.x1, u), b.cy - .5 * AL * y * 4 / Math.PI * .8];
+      }));
+    };
+  });
+  // 2 · reconocer canciones: la "constelación" de picos del espectrograma (Shazam)
+  item(1, 0, 'reconocer canciones', ['Shazam: los picos del', 'espectrograma son la huella'], (pg, b) => {
+    new Curve(pg, [[b.x0, b.y1], [b.x1, b.y1]], { color: 'ax', width: 2 }); new Curve(pg, [[b.x0, b.y1], [b.x0, b.y0]], { color: 'ax', width: 2 });
+    new Tex(pg, 't', { size: 24, x: b.x1 + 14, y: b.y1 + 8, color: 'dim' }); new Tex(pg, 'f', { size: 24, x: b.x0 - 18, y: b.y0 + 14, color: 'dim' });
+    const pts = Array.from({ length: 14 }, (_, q) => [lerp(b.x0 + 15, b.x1 - 10, (q + .5) / 14), lerp(b.y1 - 12, b.y0 + 12, r())]);
+    let d = ''; for (let q = 0; q < pts.length - 2; q += 2) d += `M${pts[q][0]},${pts[q][1]}L${pts[q + 2][0]},${pts[q + 2][1]}`;
+    const lin_ = E('path', { d, fill: 'none' }, pg); Object.assign(lin_.style, { stroke: C('h'), strokeWidth: 2 });
+    const dots = pts.map(([x, y]) => { const c = E('circle', { cx: x, cy: y, r: 7 }, pg); c.style.fill = C('k'); return c; });
+    return p => { dots.forEach((c, q) => c.style.opacity = clamp(p * 16 - q)); lin_.style.opacity = clamp(p * 2 - 1); };
+  });
+  // 3 · resonancia magnética: el resonador mide puntos del espacio k; con pocos, se arma la imagen (acá, Tilo)
+  item(2, 0, 'resonancia magnética', ['mide en el espacio $k$: con', 'menos muestras, más rápido'], (pg, b) => {
+    const dots = [];
+    for (let j = 0; j < 8; j++) for (let l = 0; l < 8; l++) {
+      const c = E('circle', { cx: b.x0 + 12 + l * 17, cy: b.y0 + 15 + j * 17, r: 4.5 }, pg);
+      const medido = r() < .35 || (Math.abs(j - 3.5) < 1.5 && Math.abs(l - 3.5) < 1.5);
+      c.style.fill = C(medido ? 'k' : 'tenue'); dots.push([c, medido]);
+    }
+    new Arrow(pg, b.x0 + 150, b.cy, b.x0 + 180, b.cy, { width: 3, head: 12 });
+    if (FOTO) new Cuadro(pg, URLS.gris(FOTO.u, FOTO.n), { cx: b.x1 - 55, cy: b.cy, lado: 110 });
+    return p => dots.forEach(([c, med], q) => c.style.opacity = med ? clamp(p * 3 - q / 64) : .7);
+  });
+  // 4 · fotografiar un agujero negro: los radiotelescopios miden la transformada de Fourier del cielo
+  item(3, 0, 'fotografiar un agujero negro', ['los radiotelescopios', 'miden $\\hat u$ del cielo'], (pg, b) => {
+    const id = 'anillo' + Math.random().toString(36).slice(2, 7), gr = E('radialGradient', { id }, pg);
+    [[0, '#000000', 0], [.42, '#000000', 0], [.62, '#ff8a3d', 1], [.72, '#ffd2a8', 1], [.86, '#c4420a', .8], [1, '#000000', 0]].forEach(([o, c, a]) => E('stop', { offset: o, 'stop-color': c, 'stop-opacity': a }, gr));
+    E('rect', { x: b.cx - 75, y: b.y0, width: 150, height: 150, rx: 8, fill: '#000000' }, pg);
+    E('circle', { cx: b.cx, cy: b.cy, r: 66, fill: `url(#${id})` }, pg);
+  });
+  // 5 · operadores neuronales de Fourier: la receta, con el H que aprende una red
+  item(0, 1, 'operadores neuronales', ['la receta, con un $H$', 'que aprende una red'], (pg, b) => {
+    new Tex(pg, '\\class{cx}{v} \\xrightarrow{\\;\\F\\;} \\class{ck}{\\hat v} \\xrightarrow{\\class{ch}{\\times R_\\theta}} \\xrightarrow{\\;\\F^{-1}}\\class{cx}{v\'}', { size: 40, x: b.cx, y: b.cy + 14, anchor: 'middle' });
+  });
+  // 6 · resolver EDPs: el calor se difunde (lo vemos en G3)
+  item(1, 1, 'resolver EDPs (en G3)', ['en Fourier, derivar es', 'multiplicar por $ik$'], (pg, b) => {
+    new Curve(pg, [[b.x0, b.y1], [b.x1, b.y1]], { color: 'ax', width: 2 });
+    const cs = [0, 1, 2, 3].map(q => new Curve(pg, Array.from({ length: 121 }, (_, i) => i / 120).map(u => {
+      const s2 = .004 + q * .012; return [lerp(b.x0, b.x1, u), b.y1 - AL * .9 * Math.sqrt(.004 / s2) * Math.exp(-((u - .5) ** 2) / (2 * s2))];
+    }), { width: 3.5 }));
+    return p => cs.forEach((c, q) => c.alpha(clamp(p * 4 - q) * (1 - .2 * q)));
+  });
+  // 7 · multiplicar números gigantes: multiplicar es convolucionar los dígitos
+  item(2, 1, 'multiplicar números gigantes', ['es convolucionar los dígitos:', 'así se calculan récords de $\\pi$'], (pg, b) => {
+    new Tex(pg, '123 \\times 456 = 56.088', { size: 38, x: b.cx, y: b.cy - 18, anchor: 'middle' });
+    new Tex(pg, '(1,2,3) \\ast (4,5,6) = (4,13,28,27,18)', { size: 26, x: b.cx, y: b.cy + 44, anchor: 'middle', color: 'h' });
+  });
+  // 8 · series de tiempo: una periodicidad escondida en el ruido aparece como un pico
+  item(3, 1, 'series de tiempo', ['periodicidades escondidas,', 'estacionalidad'], (pg, b) => {
+    const N = 128, serie = Array.from({ length: N }, (_, n) => Math.sin(2 * Math.PI * n / 8) * .7 + gauss(r) * .4);
+    new Curve(pg, serie.map((v, n) => [lerp(b.x0, b.x0 + 170, n / (N - 1)), b.cy - 28 * v]), { width: 2 });
+    const m_ = modDFT(serie), mx = Math.max(...m_.slice(1));
+    const st = new Stems(pg, b.y1, { r: 0, width: 3 });
+    new Curve(pg, [[b.x0 + 190, b.y1], [b.x1, b.y1]], { color: 'ax', width: 2 });
+    const tops = m_.slice(1, 65).map((v, k) => [lerp(b.x0 + 196, b.x1 - 4, k / 63), b.y1 - (AL - 10) * v / mx]);
+    return p => st.set(tops, p);
+  });
+  const cierre = new Mix(g, 'la FFT está en la lista de los 10 algoritmos más importantes del siglo XX', { size: 40, x: 960, y: 980, anchor: 'middle' });
+  const cierre2 = new Txt(g, '(J. Dongarra y F. Sullivan, Computing in Science & Engineering, 2000)', { size: 26, x: 960, y: 1030, anchor: 'middle', italic: true, color: 'dim' });
+  return {
+    steps: [2.6, 2.6, 1.8],
+    render(t) {
+      titulo.write(P(t, 0, .8)); sub.write(P(t, .3, .8));
+      items.forEach((it, q) => {
+        const a = (q < 4 ? .5 : 2.6) + (q % 4) * .45, p = P(t, a, .5);
+        it.m.alpha(p); it.anima(lin(t, a, 1.6), t);
+        it.nombre.write(P(t, a + .2, .5)); it.desc.forEach((d, k) => d.write(P(t, a + .4 + .15 * k, .6)));
+      });
+      cierre.write(P(t, 5.3, 1.0)); cierre2.write(P(t, 5.9, .6));
+    },
+  };
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   Navegación
+   ════════════════════════════════════════════════════════════════════════════ */
+let SL = [], cur = 0, step = 0, anim = null;
+const hud = document.getElementById('hud');
+function mostrar(i) { SL.forEach((s, j) => s.g.style.display = j === i ? '' : 'none'); hud.textContent = `${i + 1} / ${SL.length}`; }
+function pintar(i, t) { SL[i].render(t); }
+function tocar(i, k) {
+  SL[i].reset?.();
+  const b = SL[i].b; anim = { i, from: b[k], to: b[k + 1], t0: performance.now() };
+  const a = SL[i].audio?.[k]; if (a) sonar(a);
+}
+function hash() { history.replaceState(null, '', `#${cur + 1}.${step}`); }
+function siguiente() {
+  if (anim) { pintar(anim.i, anim.to); anim = null; return; }
+  const s = SL[cur];
+  if (step < s.steps.length - 1) { step++; tocar(cur, step); }
+  else if (cur < SL.length - 1) { callar(); cur++; step = 0; mostrar(cur); pintar(cur, 0); tocar(cur, 0); }
+  hash();
+}
+function anterior() {
+  anim = null; callar();
+  if (step > 0) step--;
+  else if (cur > 0) { cur--; step = SL[cur].steps.length - 1; mostrar(cur); }
+  SL[cur].reset?.(); pintar(cur, SL[cur].b[step + 1]); hash();
+}
+function ir(i, k) { anim = null; callar(); cur = clamp(i, 0, SL.length - 1); step = clamp(k, 0, SL[cur].steps.length - 1); mostrar(cur); SL[cur].reset?.(); pintar(cur, SL[cur].b[step + 1]); hash(); }
+// Menú de slides con miniaturas (estado final de cada una). Se arma la primera vez que se abre.
+const menu = document.getElementById('menu'), grilla = document.getElementById('grilla');
+const TITULOS = {
+  titulo: 'Título', 'dos-mundos': 'Dos mundos', receta: 'La receta', derivar: 'Derivar', umbral: 'Filtrar por umbral',
+  'por-que': '¿Por qué anda?', parentesis: 'Paréntesis', espectrograma: 'Espectrograma', incertidumbre: '¿Ventana corta o larga?', ballena: 'Ballenas',
+  fft: '¿Cuánto cuesta?', matriz: 'Una imagen es una matriz', 'ondas-2d': 'Puntos del espectro 2D', convolucion: 'Convolucionar a mano', 'fourier-2d': 'Fourier en 2D', 'mas-aplicaciones': 'Y hay mucho más', 'filtrar-imagenes': 'Filtrar en frecuencias', color: '¿Y a color?',
+  comprimir: 'Comprimir', babel: '¿Por qué se puede comprimir?', sintesis: 'Síntesis',
+};
+let miniaturas = null;
+function armarMiniaturas() {
+  miniaturas = SL.map((s, i) => {
+    s.render(s.b.at(-1));
+    const svg = document.createElementNS(NS, 'svg'); svg.setAttribute('viewBox', '0 0 1920 1080');
+    const copia = s.g.cloneNode(true); copia.style.display = '';
+    copia.querySelectorAll('[id]').forEach(el => {   // ids únicos (clipPath, gradientes) para no pisar a los originales
+      const viejo = el.id; el.id = `${viejo}-m${i}`;
+      for (const at of ['clip-path', 'fill']) copia.querySelectorAll(`[${at}="url(#${viejo})"]`).forEach(r => r.setAttribute(at, `url(#${el.id})`));
+    });
+    svg.appendChild(copia);
+    const d = document.createElement('div'), rot = document.createElement('div');
+    d.className = 'mini'; rot.textContent = `${i + 1}  ·  ${TITULOS[s.nombre] ?? s.nombre}`;
+    d.append(svg, rot);
+    d.addEventListener('click', e => { e.stopPropagation(); cerrarMenu(); ir(i, 0); });
+    grilla.appendChild(d);
+    return d;
+  });
+  pintar(cur, SL[cur].b[step + 1]);
+}
+function abrirMenu() {
+  if (anim) { pintar(anim.i, anim.to); anim = null; }
+  if (!miniaturas) armarMiniaturas();
+  miniaturas.forEach((d, i) => d.classList.toggle('actual', i === cur));
+  menu.hidden = false; miniaturas[cur].scrollIntoView({ block: 'nearest' });
+}
+function cerrarMenu() { menu.hidden = true; }
+hud.addEventListener('click', e => { e.stopPropagation(); menu.hidden ? abrirMenu() : cerrarMenu(); });
+
+function bucle(now) {
+  // el parlante del audio que está sonando se pinta de verde
+  for (const p of PARLANTES) {
+    const n = typeof p.nombre === 'function' ? p.nombre() : p.nombre;
+    p.g.style.setProperty('--parl', sonando && !sonando.paused && sonando === AUD[n] ? 'var(--h)' : 'var(--dim)');
+  }
+  CABEZALES.forEach(c => c.actualizar());
+  if (anim) { const t = anim.from + (now - anim.t0) / 1000; if (t >= anim.to) { pintar(anim.i, anim.to); anim = null; } else pintar(anim.i, t); }
+  requestAnimationFrame(bucle);
+}
+addEventListener('keydown', e => {
+  if (['ArrowRight', 'ArrowDown', ' ', 'PageDown', 'Enter'].includes(e.key)) { e.preventDefault(); siguiente(); }
+  else if (['ArrowLeft', 'ArrowUp', 'PageUp', 'Backspace'].includes(e.key)) { e.preventDefault(); anterior(); }
+  else if (e.key === 'Home') ir(0, 0);
+  else if (e.key === 'End') ir(SL.length - 1, 99);
+  else if (e.key === 'Escape') { callar(); cerrarMenu(); }
+  else if (e.key === 'm' || e.key === 'M') menu.hidden ? abrirMenu() : cerrarMenu();
+  else if (e.key === 't' || e.key === 'T') { const r = document.documentElement; r.dataset.theme = r.dataset.theme === 'dark' ? 'light' : 'dark'; try { localStorage.setItem('tema', r.dataset.theme); } catch (_) {} }
+  else if (e.key === 'f' || e.key === 'F') { document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen(); }
+});
+// Un click que empezó en un control (slider, botón, punto arrastrable) no pasa de slide, aunque se suelte en otro lado:
+// los controles cortan la propagación del pointerdown, así que sólo los clicks "de fondo" llegan a stage.
+let desdeControl = false;
+addEventListener('pointerdown', () => desdeControl = true, true);
+stage.addEventListener('pointerdown', () => desdeControl = false);
+stage.addEventListener('click', () => { if (desdeControl) { desdeControl = false; return; } menu.hidden ? siguiente() : cerrarMenu(); });
+
+// Para capturas automáticas: renderiza la slide i en el paso k, a una fracción del tramo.
+window.__goto = (i, k, frac = 1) => { window.__exportando = true; anim = null; cur = i; step = k; mostrar(i); const b = SL[i].b; pintar(i, lerp(b[k], b[k + 1], frac)); };
+
+(async () => {
+  try { const tm = localStorage.getItem('tema'); if (tm) document.documentElement.dataset.theme = tm; } catch (_) {}
+  await MathJax.startup.promise;
+  await Promise.all(['40px CMU', 'italic 40px CMU', 'bold 40px CMU'].map(f => document.fonts.load(f)));
+  SL = DEF.map(d => {
+    const g = E('g', { 'data-slide': d.nombre }, stage);
+    const s = d.build(g); s.g = g; s.nombre = d.nombre;
+    s.b = [0]; s.steps.forEach(v => s.b.push(s.b.at(-1) + v));
+    return s;
+  });
+  window.__slides = SL.map(s => ({ nombre: s.nombre, pasos: s.steps.length }));
+  document.getElementById('cargando').remove();
+  const m = location.hash.match(/#(\d+)\.(\d+)/);
+  if (m) ir(+m[1] - 1, +m[2]); else { mostrar(0); pintar(0, 0); tocar(0, 0); }
+  window.__ready = true;
+  requestAnimationFrame(bucle);
+})();
+</script>
+</body>
+</html>

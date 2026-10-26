@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="es" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Introducción al Modelado Continuo · clases interactivas</title>
+<style>
+@font-face{font-family:"CMU";src:url("vendor/cmu/cmu-serif-500-roman.woff2") format("woff2");font-weight:400;font-style:normal}
+@font-face{font-family:"CMU";src:url("vendor/cmu/cmu-serif-500-italic.woff2") format("woff2");font-weight:400;font-style:italic}
+@font-face{font-family:"CMU";src:url("vendor/cmu/cmu-serif-700-roman.woff2") format("woff2");font-weight:700;font-style:normal}
+
+/* mismos colores que las clases (y el mismo tema guardado: T lo cambia acá y allá) */
+:root{ --bg:#ffffff; --fg:#141414; --dim:#6a6a6a; --tenue:#a0a0a0; --x:#1450a8; --k:#c4420a; --h:#1b7a32; }
+:root[data-theme=dark]{ --bg:#121315; --fg:#f2f2f2; --dim:#9c9c9c; --tenue:#686868; --x:#5fb4ff; --k:#ff8a3d; --h:#5ed473; }
+html{background:var(--bg);color:var(--fg);font:20px/1.45 "CMU",serif}
+body{margin:0 auto;max-width:1100px;padding:56px 28px 40px}
+h1{font-size:2.3rem;font-weight:400;margin:0}
+.bajada{color:var(--dim);font-style:italic;margin:.2rem 0 2.6rem}
+#clases{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:28px}
+.clase{display:block;color:inherit;text-decoration:none;border:1.5px solid var(--tenue);border-radius:14px;overflow:hidden;
+  transition:border-color .15s, transform .15s}
+.clase:hover{border-color:var(--h);transform:translateY(-2px)}
+.clase img{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;border-bottom:1px solid var(--tenue)}
+:root[data-theme=dark] .solo-claro, :root:not([data-theme=dark]) .solo-oscuro{display:none}
+.clase > div{padding:14px 18px 18px}
+.clase h2{font-size:1.25rem;font-weight:700;margin:0 0 .2rem}
+.clase .quien{color:var(--k);font-size:.85rem;margin-bottom:.4rem}
+.clase p{margin:0;color:var(--dim);font-size:.9rem}
+.como{margin-top:2.8rem;color:var(--dim);font-size:.85rem;border-top:1px solid var(--tenue);padding-top:1rem}
+kbd{font:inherit;font-size:.8rem;border:1px solid var(--tenue);border-radius:5px;padding:0 .35em;color:var(--fg)}
+footer{margin-top:1.4rem;color:var(--dim);font-size:.75rem}
+footer a{color:inherit}
+</style>
+</head>
+<body>
+<h1>Introducción al Modelado Continuo</h1>
+<p class="bajada">Clases interactivas · Lic. en Ciencia de Datos, FCEN-UBA · 2º cuatrimestre 2026</p>
+
+<section id="clases">
+  <a class="clase" href="clase_fourier_aplicaciones/">
+    <img class="solo-claro" src="clase_fourier_aplicaciones/miniatura-claro.png" alt="">
+    <img class="solo-oscuro" src="clase_fourier_aplicaciones/miniatura-oscuro.png" alt="">
+    <div>
+      <h2>Aplicaciones de Fourier</h2>
+      <div class="quien">Bloque 2 · Fourier</div>
+      <p>Filtrar ruido, espectrogramas, la ballena jorobada, Fourier en 2D, convolución y compresión de imágenes.</p>
+    </div>
+  </a>
+</section>
+
+<p class="como">
+  En las clases: click, <kbd>→</kbd> o <kbd>espacio</kbd> avanza; <kbd>←</kbd> retrocede;
+  <kbd>M</kbd> (o el número de abajo a la derecha) abre el índice de slides; <kbd>T</kbd> cambia entre tema claro y oscuro;
+  <kbd>F</kbd> pantalla completa. Cada audio suena con su propio click en el parlante.
+</p>
+<footer>
+  Audios: piano de <a href="https://theremin.music.uiowa.edu/MIS.html">University of Iowa MIS</a>;
+  ballena jorobada de Glacier Bay National Park (NPS), dominio público.
+  Fuentes: Computer Modern Unicode (SIL OFL) · fórmulas con <a href="https://www.mathjax.org/">MathJax</a> (Apache 2.0).
+</footer>
+
+<script>
+try { const tm = localStorage.getItem('tema'); if (tm) document.documentElement.dataset.theme = tm; } catch (_) {}
+addEventListener('keydown', e => {
+  if (e.key !== 't' && e.key !== 'T') return;
+  const r = document.documentElement; r.dataset.theme = r.dataset.theme === 'dark' ? 'light' : 'dark';
+  try { localStorage.setItem('tema', r.dataset.theme); } catch (_) {}
+});
+</script>
+</body>
+</html>
