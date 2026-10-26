@@ -21,7 +21,7 @@
   --bg:#121315; --fg:#f2f2f2; --ax:#c4c4c4; --dim:#9c9c9c; --tenue:#686868;
   --x:#5fb4ff; --k:#ff8a3d; --h:#5ed473; --ruido:#c99bff;
 }
-html,body{margin:0;height:100%;background:var(--bg);overflow:hidden;user-select:none}
+html,body{margin:0;height:100%;background:var(--bg);overflow:hidden;user-select:none;overscroll-behavior:none}
 #stage{position:fixed;inset:0;width:100vw;height:100vh;display:block;background:var(--bg)}
 text{font-family:"CMU",serif}
 /* colores dentro de fórmulas: \class{cx}{...} */
@@ -2615,7 +2615,24 @@ addEventListener('keydown', e => {
 let desdeControl = false;
 addEventListener('pointerdown', () => desdeControl = true, true);
 stage.addEventListener('pointerdown', () => desdeControl = false);
-stage.addEventListener('click', () => { if (desdeControl) { desdeControl = false; return; } menu.hidden ? siguiente() : cerrarMenu(); });
+stage.addEventListener('click', () => {
+  if (desdeControl || trasDeslizar) { desdeControl = trasDeslizar = false; return; }
+  menu.hidden ? siguiente() : cerrarMenu();
+});
+// En el celular, además de tocar: deslizar a la izquierda avanza y a la derecha retrocede. El pointerdown llega
+// antes que el touchstart, así que un gesto que empieza en un control (desdeControl) no cuenta.
+let toque = null, trasDeslizar = false;
+stage.addEventListener('touchstart', e => {
+  trasDeslizar = false;
+  toque = e.touches.length === 1 && !desdeControl && menu.hidden ? { x: e.touches[0].clientX, y: e.touches[0].clientY } : null;
+}, { passive: true });
+stage.addEventListener('touchend', e => {
+  if (!toque) return;
+  const dx = e.changedTouches[0].clientX - toque.x, dy = e.changedTouches[0].clientY - toque.y; toque = null;
+  if (Math.abs(dx) < 50 || Math.abs(dx) < 1.5 * Math.abs(dy)) return;
+  trasDeslizar = true;   // por si el navegador igual dispara el click del toque
+  dx < 0 ? siguiente() : anterior();
+});
 
 // Para capturas automáticas: renderiza la slide i en el paso k, a una fracción del tramo.
 window.__goto = (i, k, frac = 1) => { window.__exportando = true; anim = null; cur = i; step = k; mostrar(i); const b = SL[i].b; pintar(i, lerp(b[k], b[k + 1], frac)); };
