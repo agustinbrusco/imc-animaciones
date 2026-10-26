@@ -1,0 +1,37 @@
+/* Motor de las clases interactivas: tipografía, temas y la interfaz común (número de slide, menú, cargando).
+   Lo usan todas las clases de animaciones/ (las rutas son relativas a este archivo). */
+@font-face{font-family:"CMU";src:url("../vendor/cmu/cmu-serif-500-roman.woff2") format("woff2");font-weight:400;font-style:normal}
+@font-face{font-family:"CMU";src:url("../vendor/cmu/cmu-serif-500-italic.woff2") format("woff2");font-weight:400;font-style:italic}
+@font-face{font-family:"CMU";src:url("../vendor/cmu/cmu-serif-700-roman.woff2") format("woff2");font-weight:700;font-style:normal}
+
+/* Tema claro (por defecto): pensado para proyector. Colores oscuros y saturados, nada de pasteles. */
+:root{
+  --bg:#ffffff; --fg:#141414; --ax:#3a3a3a; --dim:#6a6a6a; --tenue:#a0a0a0;
+  --x:#1450a8;      /* espacio real / tiempo */
+  --k:#c4420a;      /* frecuencias */
+  --h:#1b7a32;      /* operador H(k) */
+  --ruido:#7a2bbf;  /* ruido */
+}
+:root[data-theme=dark]{
+  --bg:#121315; --fg:#f2f2f2; --ax:#c4c4c4; --dim:#9c9c9c; --tenue:#686868;
+  --x:#5fb4ff; --k:#ff8a3d; --h:#5ed473; --ruido:#c99bff;
+}
+html,body{margin:0;height:100%;background:var(--bg);overflow:hidden;user-select:none;overscroll-behavior:none}
+#stage{position:fixed;inset:0;width:100vw;height:100vh;display:block;background:var(--bg)}
+text{font-family:"CMU",serif}
+/* colores dentro de fórmulas: \class{cx}{...} */
+.cx{fill:var(--x);stroke:var(--x)} .ck{fill:var(--k);stroke:var(--k)}
+.ch{fill:var(--h);stroke:var(--h)} .cr{fill:var(--ruido);stroke:var(--ruido)} .cd{fill:var(--dim);stroke:var(--dim)}
+/* imágenes con una versión por tema */
+:root[data-theme=dark] .solo-claro, :root:not([data-theme=dark]) .solo-oscuro{display:none}
+.parlante{cursor:pointer} .parlante:hover{opacity:.7}
+#hud{position:fixed;right:10px;bottom:6px;font:15px "CMU",serif;color:var(--dim);opacity:.55;cursor:pointer;padding:4px 8px;border-radius:6px}
+#hud:hover{opacity:1;background:color-mix(in srgb, var(--tenue) 25%, transparent)}
+/* menú de slides: se despliega hacia arriba desde el número */
+#menu{position:fixed;right:10px;bottom:38px;width:min(800px,92vw);max-height:82vh;overflow:auto;z-index:10;
+  background:var(--bg);border:1.5px solid var(--tenue);border-radius:12px;box-shadow:0 12px 32px rgba(0,0,0,.2);padding:14px}
+#grilla{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}
+.mini{cursor:pointer;border:2px solid transparent;border-radius:9px;padding:5px;font:15px "CMU",serif;color:var(--dim)}
+.mini:hover{border-color:var(--tenue)} .mini.actual{border-color:var(--h);color:var(--fg)}
+.mini svg{display:block;width:100%;aspect-ratio:16/9;background:var(--bg);border:1px solid var(--tenue);border-radius:5px;margin-bottom:4px}
+#cargando{position:fixed;inset:0;display:grid;place-items:center;font:28px "CMU",serif;color:var(--dim)}

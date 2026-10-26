@@ -1,0 +1,740 @@
+<!doctype html>
+<html lang="es" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Fourier como álgebra lineal</title>
+<link rel="stylesheet" href="../comun/motor.css">
+<script>
+window.MathJax = {
+  svg: { fontCache: 'none' },
+  startup: { typeset: false },
+  tex: { macros: { sen: '\\operatorname{sen}' } }
+};
+</script>
+<script src="../vendor/mathjax/tex-svg-full.js"></script>
+</head>
+<body>
+<svg id="stage" viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid meet"></svg>
+<div id="hud" title="Ir a una slide (M)"></div>
+<div id="menu" hidden><div id="grilla"></div></div>
+<div id="cargando">cargando…</div>
+<script src="../comun/motor.js"></script>
+<script>
+/* Fourier como álgebra lineal: la clase del 22/09 (el pizarrón de Excalidraw), con cada dibujo tocable.
+   Colores: azul = el vector o la función f, verde = la base, naranja = los coeficientes, violeta = lo que da negativo
+   o lo que falla (base no ortogonal). */
+
+/* ── herramientas de esta clase ──────────────────────────────────────────── */
+const PI = Math.PI;
+const linspace = (a, b, n) => Array.from({ length: n }, (_, i) => a + (b - a) * i / (n - 1));
+function integral(h, a = -PI, b = PI, n = 4000) {   // punto medio
+  const dx = (b - a) / n; let s = 0;
+  for (let i = 0; i < n; i++) s += h(a + (i + .5) * dx);
+  return s * dx;
+}
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1];
+const XS = linspace(-PI, PI, 1201);
+const TICKS_PI = [[-PI, '-\\pi'], [-PI / 2, '-\\tfrac{\\pi}{2}'], [PI / 2, '\\tfrac{\\pi}{2}'], [PI, '\\pi']];
+const ejePi = (x0, x1, y0, y1, yr, o = {}) => ({ x0, x1, y0, y1, xr: [-PI, PI], yr, ejeY: 0, base: 0, xticks: TICKS_PI, xlabel: 'x', ...o });
+
+// Flecha de p0 a p1 (en píxeles), estirada hasta prog; si es muy corta no se dibuja.
+function poner(fl, p0, p1, prog = 1) {
+  Object.assign(fl, { x1: p0[0], y1: p0[1], x2: p1[0], y2: p1[1] });
+  if (Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) < 4) return fl.alpha(0);
+  return fl.grow(prog);
+}
+// Área entre una curva y una recta horizontal (base), con la parte de arriba y la de abajo en dos colores.
+class Area extends M {
+  constructor(parent, o = {}) {
+    super(parent);
+    this.pos = E('path', {}, this.g); this.neg = E('path', {}, this.g);
+    Object.assign(this.pos.style, { fill: C(o.pos || 'x'), fillOpacity: .22 });
+    Object.assign(this.neg.style, { fill: C(o.neg || 'ruido'), fillOpacity: .22 });
+  }
+  set(ax, xs, ys, base = 0) {
+    if (xs.length < 2) { this.pos.setAttribute('d', 'M0,0'); this.neg.setAttribute('d', 'M0,0'); return this; }
+    const yb = ax.Y(base);
+    const poli = s => {
+      const pts = xs.map((x, i) => [ax.X(x), ax.Y(s > 0 ? Math.max(ys[i], base) : Math.min(ys[i], base))]);
+      return pathD([[pts[0][0], yb], ...pts, [pts.at(-1)[0], yb]]) + 'Z';
+    };
+    this.pos.setAttribute('d', poli(1)); this.neg.setAttribute('d', poli(-1));
+    return this;
+  }
+}
+// Pista para quien mira la clase por su cuenta: qué se puede tocar.
+const pista = (g, s, x, y, o = {}) => new Mix(g, s, { size: 26, x, y, italic: true, color: 'dim', anchor: 'middle', ...o });
+
+// Las funciones de los ejemplos, con sus coeficientes de Fourier calculados numéricamente.
+const NMAX = 40;
+const FUN = {
+  f: { pill: '$f$ del 1.c', tex: 'f', par: true, yr: [-.5, 1.45], h: x => Math.abs(x) >= PI / 2 ? 1 : 0 },
+  f2: { pill: '$f_2$ del 1.c', tex: 'f_2', par: false, yr: [-1.15, 1.15], h: x => x <= -PI / 2 ? (x + PI) / 2 : x <= PI / 2 ? -x / 2 : (x - PI) / 2 },
+  x: { pill: 'diente de sierra', tex: 'x', par: false, yr: [-4.2, 4.2], h: x => x },
+};
+for (const F of Object.values(FUN)) {
+  F.a = Array.from({ length: NMAX + 1 }, (_, n) => integral(x => F.h(x) * Math.cos(n * x)) / ((n ? 1 : 2) * PI));
+  F.b = Array.from({ length: NMAX + 1 }, (_, n) => n ? integral(x => F.h(x) * Math.sin(n * x)) / PI : 0);
+  F.ys = XS.map(F.h);
+  F.max = Math.max(...F.ys.map(Math.abs));
+}
+// Suma parcial con los términos n que pasan el filtro (el término 0 es a_0)
+function suma(F, usar, xs = XS) {
+  return xs.map(x => {
+    let s = usar(0) ? F.a[0] : 0;
+    for (let n = 1; n <= NMAX; n++) if (usar(n)) s += F.a[n] * Math.cos(n * x) + F.b[n] * Math.sin(n * x);
+    return s;
+  });
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   1  Título
+   ════════════════════════════════════════════════════════════════════════════ */
+slide('titulo', g => {
+  const t1 = new Txt(g, 'Series de Fourier', { size: 86, anchor: 'middle', x: 960, y: 410 });
+  const t2 = new Mix(g, 'como álgebra lineal para funciones', { size: 48, anchor: 'middle', x: 960, y: 495, italic: true, color: 'dim' });
+  // la f₂ del 1.c, con cinco términos de su serie
+  const us = linspace(0, 1, 700), F = FUN.f2;
+  const y = u => { const x = -2 * PI + 4 * PI * u; let s = 0; for (let n = 1; n <= 9; n += 2) s += F.b[n] * Math.sin(n * x); return s; };
+  const onda = new Curve(g, us.map(u => [260 + 1400 * u, 720 - 120 * y(u)]), { color: 'x', width: 5 });
+  const pie = new Txt(g, 'Introducción al Modelado Continuo  ·  2C 2026', { size: 30, anchor: 'middle', x: 960, y: 990, color: 'dim' });
+  return {
+    steps: [2.6],
+    render(t) { t1.write(P(t, 0, 1.4)); t2.write(P(t, .8, 1.1)); onda.create(P(t, 1.1, 1.5)); pie.write(P(t, 1.6, .8)); },
+  };
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   2  En ℝ²: los coeficientes en una base ortogonal son productos internos.
+      Se arrastran f, u y v; con "cualquier base" la suma de proyecciones deja de dar f.
+   ════════════════════════════════════════════════════════════════════════════ */
+slide('r2', g => {
+  const titulo = new Mix(g, 'En $\\mathbb R^2$', { size: 54, x: 70, y: 80 });
+  const O = [420, 690], S = 125;
+  const W = ([x, y]) => [O[0] + S * x, O[1] - S * y], mundo = q => [(q.x - O[0]) / S, (O[1] - q.y) / S];
+  const lim = ([x, y]) => [clamp(x, -1.7, 4.4), clamp(y, -1.6, 3.9)];
+  const ax = new Axes(g, { x0: 170, x1: 1000, y0: 180, y1: 920, xr: [-2, 4.64], yr: [-1.84, 4.08], ejeY: 0, base: 0 });
+  const cp = E('clipPath', { id: 'clipR2' }, g); E('rect', { x: 150, y: 160, width: 880, height: 780 }, cp);
+  const rectaU = new Curve(g, null, { color: 'tenue', width: 2, clip: 'clipR2' }), rectaV = new Curve(g, null, { color: 'tenue', width: 2, clip: 'clipR2' });
+  const guia = (col = 'dim') => new Curve(g, null, { color: col, width: 2.5, dash: '7 9' });
+  const gA = guia(), gB = guia(), gC = guia(), gD = guia(), gS1 = guia('ruido'), gS2 = guia('ruido');
+  const e1 = new Arrow(g, ...W([0, 0]), ...W([1, 0]), { color: 'fg', width: 4, head: 18 });
+  const e2 = new Arrow(g, ...W([0, 0]), ...W([0, 1]), { color: 'fg', width: 4, head: 18 });
+  const le1 = new Tex(g, '\\hat e_1', { size: 36, x: W([1, 0])[0] - 10, y: O[1] + 46, anchor: 'middle' });
+  const le2 = new Tex(g, '\\hat e_2', { size: 36, x: O[0] - 18, y: W([0, 1])[1] + 14, anchor: 'end' });
+  const aS = new Arrow(g, 0, 0, 1, 1, { color: 'ruido', width: 4, dash: '12 8' });
+  const aU = new Arrow(g, 0, 0, 1, 1, { color: 'h', width: 4.5 }), aV = new Arrow(g, 0, 0, 1, 1, { color: 'h', width: 4.5 });
+  const aF = new Arrow(g, 0, 0, 1, 1, { color: 'x', width: 5.5, head: 26 });
+  const lF = new Tex(g, '\\vec f', { size: 44, color: 'x' }), lU = new Tex(g, '\\vec u', { size: 40, color: 'h' }), lV = new Tex(g, '\\vec v', { size: 40, color: 'h' });
+  const lA = new Tex(g, 'a', { size: 38, color: 'k', anchor: 'middle' }), lB = new Tex(g, 'b', { size: 38, color: 'k', anchor: 'end' });
+  const lC = new Tex(g, 'c\\,\\vec u', { size: 34, color: 'k' }), lD = new Tex(g, 'd\\,\\vec v', { size: 34, color: 'k' });
+  const pC = E('circle', { r: 7 }, g), pD = E('circle', { r: 7 }, g); pC.style.fill = pD.style.fill = C('k');
+
+  // estado: f y u libres; v perpendicular a u (largo con signo sv) o libre
+  let f = [2.6, 2.1], u = [1.55, .85], sv = 1.25, vLibre = [-.6, 1.3], libre = false;
+  const perp = w => { const L = Math.hypot(...w); return [-w[1] / L, w[0] / L]; };
+  const vAct = () => libre ? vLibre : perp(u).map(c => c * sv);
+  const mF = new Manija(g, 'x', q => { f = lim(mundo(q)); redibujar(); });
+  const mU = new Manija(g, 'h', q => { const w = lim(mundo(q)); if (Math.hypot(...w) > .35) u = w; redibujar(); });
+  const mV = new Manija(g, 'h', q => {
+    const w = lim(mundo(q));
+    if (libre) { if (Math.hypot(...w) > .35) vLibre = w; }
+    else { const s = dot(w, perp(u)); if (Math.abs(s) > .35) sv = s; }
+    redibujar();
+  });
+
+  // derecha: las cuentas, en vivo
+  const X0 = 1110;
+  const tB = new Tex(g, 'B = \\{\\hat e_1,\\ \\hat e_2\\}', { size: 40, x: X0, y: 250 });
+  const tF1 = new Tex(g, '\\vec f = a\\,\\hat e_1 + b\\,\\hat e_2', { size: 40, x: X0, y: 330 });
+  const rA = new Lectura(g, 'a = \\vec f\\cdot\\hat e_1 =', { size: 36, x: X0 + 30, y: 410, colorNum: 'k' });
+  const rB = new Lectura(g, 'b = \\vec f\\cdot\\hat e_2 =', { size: 36, x: X0 + 400, y: 410, colorNum: 'k' });
+  const tBt = new Tex(g, '\\tilde B = \\{\\vec u,\\ \\vec v\\}', { size: 40, x: X0, y: 545 });
+  const rUV = new Lectura(g, '\\vec u\\cdot\\vec v =', { size: 34, x: X0 + 330, y: 545 });
+  const tF2 = new Tex(g, '\\vec f = c\\,\\vec u + d\\,\\vec v', { size: 40, x: X0, y: 630 });
+  const tNo = new Tex(g, 'c\\,\\vec u + d\\,\\vec v \\neq \\vec f', { size: 40, x: X0, y: 630, color: 'ruido' });
+  const rC = new Lectura(g, 'c = \\dfrac{\\vec f\\cdot\\vec u}{\\|\\vec u\\|^2} =', { size: 36, x: X0 + 30, y: 750, colorNum: 'k' });
+  const rD = new Lectura(g, 'd = \\dfrac{\\vec f\\cdot\\vec v}{\\|\\vec v\\|^2} =', { size: 36, x: X0 + 400, y: 750, colorNum: 'k' });
+  const pas = new Pastillas(g, X0, 875, [[false, 'base ortogonal'], [true, 'cualquier base']], l => {
+    if (!l) { const s = dot(vLibre, perp(u)); sv = Math.abs(s) > .35 ? s : 1.25; } else vLibre = vAct();
+    libre = l; redibujar();
+  });
+  const pis = pista(g, 'las puntas de las flechas se arrastran', 585, 975);
+  const T1 = 2.4;
+  const ley = leyendas(g, [['con una base ortogonal, cada coeficiente sale de un producto interno', T1 + 1.8]], { size: 38, y: 1040 });
+
+  let tUlt = 0;
+  const yo = {
+    steps: [T1, 3.4],
+    render(t) {
+      tUlt = t;
+      const pE = P(t, 0, 1), pF = P(t, .5, .9), pAB = P(t, 1.1, .8), pR = P(t, .4, 1.4);
+      const pUV = P(t, T1, .9), pCD = P(t, T1 + .7, .8), pR2 = P(t, T1 + .4, 1.4), pPas = P(t, T1 + 1.4, .6);
+      titulo.write(P(t, 0, .9)); ax.create(pE); e1.grow(pE); e2.grow(pE); le1.write(pE); le2.write(pE);
+      // f y sus coordenadas en la base canónica (se atenúan cuando entra la otra base)
+      const Fp = W(f), atenua = 1 - .6 * pUV;
+      poner(aF, O, Fp, pF); lF.at(Fp[0] + 14, Fp[1] - 16).write(pF); mF.at(...Fp).alpha(pF >= 1 ? 1 : 0);
+      gA.set([Fp, W([f[0], 0])]).create(pAB * atenua); gB.set([Fp, W([0, f[1]])]).create(pAB * atenua);
+      lA.at(W([f[0], 0])[0], O[1] + (f[1] >= 0 ? 46 : -18)).write(pAB).alpha(pAB > 0 ? atenua : 0);
+      lB.at(O[0] - 16, W([0, f[1]])[1] + 12).write(pAB).alpha(pAB > 0 ? atenua : 0);
+      // la otra base, las proyecciones y (si no es ortogonal) la suma que no da f
+      const v = vAct(), Up = W(u), Vp = W(v), c = dot(f, u) / dot(u, u), d = dot(f, v) / dot(v, v);
+      const cu = u.map(q => q * c), dv = v.map(q => q * d), s = [cu[0] + dv[0], cu[1] + dv[1]];
+      const lejos = w => { const L = 20 / Math.hypot(...w); return [W([-w[0] * L, -w[1] * L]), W([w[0] * L, w[1] * L])]; };
+      rectaU.set(lejos(u)).create(pUV); rectaV.set(lejos(v)).create(pUV);
+      poner(aU, O, Up, pUV); poner(aV, O, Vp, pUV);
+      lU.at(Up[0] + 12, Up[1] - 14).write(pUV); lV.at(Vp[0] + 12, Vp[1] - 14).write(pUV);
+      mU.at(...Up).alpha(pUV >= 1 ? 1 : 0); mV.at(...Vp).alpha(pUV >= 1 ? 1 : 0);
+      gC.set([Fp, W(cu)]).create(pCD); gD.set([Fp, W(dv)]).create(pCD);
+      pC.setAttribute('cx', W(cu)[0]); pC.setAttribute('cy', W(cu)[1]); pD.setAttribute('cx', W(dv)[0]); pD.setAttribute('cy', W(dv)[1]);
+      pC.style.opacity = pD.style.opacity = pCD;
+      lC.at(W(cu)[0] + 14, W(cu)[1] + 36).write(pCD); lD.at(W(dv)[0] - 76, W(dv)[1] - 14).write(pCD);
+      const falla = libre && Math.hypot(s[0] - f[0], s[1] - f[1]) > .04 ? pCD : 0;
+      poner(aS, O, W(s), 1).alpha(falla); gS1.set([W(cu), W(s)]).create(falla); gS2.set([W(dv), W(s)]).create(falla);
+      // cuentas
+      tB.write(pR); tF1.write(pR); rA.set(f[0]).write(pR); rB.set(f[1]).write(pR);
+      const uv = dot(u, v);
+      tBt.write(pR2); rUV.set(uv).color(Math.abs(uv) < .005 ? 'h' : 'ruido').write(pR2);
+      tF2.write(falla ? 0 : pR2); tNo.write(falla ? pR2 : 0);
+      rC.set(c).write(pR2); rD.set(d).write(pR2);
+      pas.alpha(pPas); pis.write(P(t, 1.4, .8)); ley(t);
+    },
+  };
+  const redibujar = () => yo.render(tUlt);
+  return yo;
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   3  En ℝᴺ: un vector es el gráfico de sus coeficientes; con N → ∞, una función.
+      El ℝ³ se gira arrastrando; los f_n se arrastran (con N = 3) y después manda el slider de N.
+   ════════════════════════════════════════════════════════════════════════════ */
+slide('rn', g => {
+  const titulo = new Mix(g, 'En $\\mathbb R^N$', { size: 54, x: 70, y: 80 });
+  // izquierda: ℝ³ en perspectiva. Coordenadas (f₁, f₂, f₃): ê₂ para arriba, ê₃ hacia quien mira.
+  const O3 = [450, 650], S3 = 270, EL = .38; let th = -.72;
+  const pr = ([a, b, c]) => {
+    const x = a * Math.cos(th) + c * Math.sin(th), z = -a * Math.sin(th) + c * Math.cos(th);
+    return [O3[0] + S3 * x, O3[1] - S3 * (b * Math.cos(EL) - z * Math.sin(EL))];
+  };
+  let giro = null;
+  const zona = E('rect', { x: 120, y: 220, width: 700, height: 700, fill: 'transparent' }, g); zona.style.cursor = 'grab';
+  arrastrable(zona, q => { giro ??= { x: q.x, th }; th = giro.th + (q.x - giro.x) / 260; redibujar(); }, () => giro = null);
+  const DIR = [[1, 0, 0], [0, 1, 0], [0, 0, 1]], DIR_N = [-.62, .6, -.5];
+  const ejes = DIR.map(() => new Arrow(g, 0, 0, 1, 1, { color: 'fg', width: 3.5, head: 18 }));
+  const lEjes = ['\\hat e_1', '\\hat e_2', '\\hat e_3'].map(s => new Tex(g, s, { size: 36, anchor: 'middle' }));
+  const ejeN = new Arrow(g, 0, 0, 1, 1, { color: 'fg', width: 3.5, head: 18, dash: '3 10' });
+  const lN = new Tex(g, '\\hat e_N', { size: 36, anchor: 'middle' }), lPuntos = new Tex(g, '\\cdots', { size: 36, anchor: 'middle', color: 'dim' });
+  const guias = [0, 1, 2].map(() => new Curve(g, null, { color: 'dim', width: 2, dash: '6 8' }));
+  const aF = new Arrow(g, 0, 0, 1, 1, { color: 'x', width: 5.5, head: 26 }), lF = new Tex(g, '\\vec f', { size: 44, color: 'x' });
+  const tR3 = new Tex(g, '\\vec f = f_1\\,\\hat e_1 + f_2\\,\\hat e_2 + f_3\\,\\hat e_3', { size: 40, x: 130, y: 250 });
+  const tRN = new Tex(g, '\\vec f = \\sum_{n=1}^{N} f_n\\,\\hat e_n', { size: 40, x: 130, y: 250 });
+  const noEntra = new Mix(g, 'con $N > 3$ ya no lo podemos dibujar…', { size: 32, x: 450, y: 965, anchor: 'middle', italic: true, color: 'dim' });
+
+  // derecha: el mismo vector como gráfico de sus coeficientes
+  const ax = new Axes(g, { x0: 1080, x1: 1790, y0: 300, y1: 840, xr: [0, 1.06], yr: [-.65, 1.25], base: 0, xlabel: 'n/N' });
+  const lFn = new Tex(g, 'f_n', { size: 38, x: 1098, y: 292, color: 'x' });
+  const marcas = E('path', {}, g); Object.assign(marcas.style, { stroke: C('ax'), strokeWidth: 2.5 });
+  const t1 = new Tex(g, '1', { size: 28, x: ax.X(1), y: ax.yb + 38, anchor: 'middle', color: 'dim' });
+  const t1N = new Tex(g, '\\tfrac1N', { size: 28, anchor: 'middle', color: 'dim' });
+  const stems = new Stems(g, ax.Y(0), { color: 'x', r: 7, width: 4 });
+  const lfi = [1, 2, 3].map(i => new Tex(g, `f_${i}`, { size: 32, anchor: 'middle', color: 'x' }));
+  const curva = new Curve(g, linspace(0, 1, 200).map(x => [ax.X(x), ax.Y((1 - x) ** 2)]), { color: 'x', width: 3 });
+  const lCurva = new Tex(g, 'f(x) = (1-x)^2', { size: 38, x: ax.X(.42), y: ax.Y(.55), color: 'x' });
+  const tFn = new Tex(g, 'f_n = \\Big(1 - \\frac{n}{N}\\Big)^2', { size: 40, x: 1100, y: 225, color: 'x' });
+  let fv = [1, .75, .3];   // el vector "libre" de ℝ³
+  const mS = [0, 1, 2].map(i => new Manija(g, 'x', q => {
+    fv[i] = clamp(ax.yr[0] + (ax.y1 - q.y) / (ax.y1 - ax.y0) * (ax.yr[1] - ax.yr[0]), -.55, 1.15); redibujar();
+  }));
+  const NS = [3, 4, 5, 6, 8, 10, 12, 16, 20, 30, 40, 60, 100, 200, 300];
+  const sl = new Deslizador(g, 1110, 1560, 965, NS, () => redibujar(), { rotulo: 'dimensión', texto: N => `$N = ${N}$` });
+  const pis = pista(g, 'el $\\mathbb R^3$ se gira arrastrando; las puntas de los $f_n$ se arrastran', 960, 1040);
+  const T1 = 2.2, T2 = T1 + 2.2, T3 = T2 + 2.6;
+  const ley = leyendas(g, [['con $N \\to \\infty$, el gráfico de los $f_n$ es una función', T3 + .2]], { size: 38, y: 1040 });
+
+  let tUlt = 0;
+  const yo = {
+    steps: [T1, T2 - T1, T3 - T2, 2],
+    render(t) {
+      tUlt = t;
+      const p0 = P(t, 0, 1), pF = P(t, .5, .9), pR = P(t, T1, 1), pFor = P(t, T2, 1.2), pN = P(t, T2 + .4, .9), pC = P(t, T3, 1);
+      titulo.write(P(t, 0, .9));
+      // ℝ³: con N = 3 se ve el vector; después queda el esquema de ℝᴺ
+      const N = pFor > 0 ? sl.v : 3, formula = i => (1 - (i + 1) / N) ** 2;
+      const f3 = [0, 1, 2].map(i => pFor > 0 && N === 3 ? lerp(fv[i], formula(i), pFor) : pFor > 0 ? formula(i) : fv[i]);
+      const o = pr([0, 0, 0]), vis3 = 1 - (N > 3 ? 1 : 0);
+      DIR.forEach((d, i) => {
+        const pt = pr(d.map(c => c * 1.15)), lbl = pr(d.map(c => c * 1.32));
+        poner(ejes[i], o, pt, p0); lEjes[i].at(lbl[0], lbl[1] + 12).write(p0);
+      });
+      const ptN = pr(DIR_N), lblN = pr(DIR_N.map(c => c * 1.2)), mid = pr([-.45, .2, .35]);
+      poner(ejeN, o, ptN, pN); lN.at(lblN[0], lblN[1] + 12).write(pN); lPuntos.at(mid[0], mid[1]).write(pN);
+      const tip = pr([f3[0], f3[1], f3[2]]), piso = pr([f3[0], 0, f3[2]]);
+      const aF3 = pF * vis3;
+      poner(aF, o, tip, pF).alpha(aF3 > 0 ? 1 : 0); lF.at(tip[0] + 14, tip[1] - 14).write(aF3);
+      guias[0].set([tip, piso]).create(.8 * aF3); guias[1].set([piso, pr([f3[0], 0, 0])]).create(.8 * aF3); guias[2].set([piso, pr([0, 0, f3[2]])]).create(.8 * aF3);
+      tR3.write(pFor > 0 ? 1 - pFor : p0); tRN.write(pFor);
+      noEntra.write(N > 3 ? pN : 0);
+      // gráfico de los coeficientes
+      ax.create(pR); lFn.write(pR);
+      let d = ''; if (N <= 20) for (let n = 1; n <= N; n++) d += `M${ax.X(n / N)},${ax.yb}v9`;
+      marcas.setAttribute('d', d || 'M0,0'); marcas.style.opacity = pR;
+      t1.write(pR); t1N.at(ax.X(1 / N), ax.yb + 38).write(N <= 12 ? pR : 0);
+      const vals = N === 3 ? f3 : Array.from({ length: N }, (_, i) => formula(i));
+      stems.r = N <= 30 ? 7 : 0; stems.p.style.strokeWidth = N <= 60 ? 4 : N <= 100 ? 3 : 2;
+      stems.set(vals.map((v, i) => [ax.X((i + 1) / N), ax.Y(v)]), pR);
+      lfi.forEach((l, i) => l.at(ax.X((i + 1) / 3) - 26, ax.Y(f3[i]) + (f3[i] >= 0 ? -16 : 40)).write(N === 3 ? pR : 0));
+      mS.forEach((m, i) => m.at(ax.X((i + 1) / 3), ax.Y(f3[i])).alpha(pR >= 1 && pFor === 0 ? 1 : 0));
+      tFn.write(pFor); sl.alpha(pN);
+      curva.create(pC); curva.alpha(pC > 0 ? .75 : 0); lCurva.write(pC);
+      pis.write(P(t, T1 + .9, .8) * (1 - pFor)); ley(t);
+    },
+  };
+  const redibujar = () => yo.render(tUlt);
+  return yo;
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   4  Del producto interno a la integral: Σ f_n g_n Δx → ∫ f g dx.
+   ════════════════════════════════════════════════════════════════════════════ */
+slide('producto', g => {
+  const titulo = new Txt(g, 'Del producto interno a la integral', { size: 54, x: 70, y: 80 });
+  const hL = new Mix(g, 'en $\\mathbb R^N$', { size: 34, x: 520, y: 165, anchor: 'middle', italic: true, color: 'dim' });
+  const hR = new Mix(g, 'en funciones', { size: 34, x: 1400, y: 165, anchor: 'middle', italic: true, color: 'dim' });
+  const nInf = new Tex(g, 'N\\to\\infty', { size: 30, x: 960, y: 165, anchor: 'middle', color: 'dim' });
+  const filas = [
+    ['\\vec f = \\sum_{n=1}^{N} f_n\\,\\hat e_n', 'f(x) = \\sum_{n} f_n\\,\\phi_n(x)', 255],
+    ['f_n = \\frac{\\vec f\\cdot\\vec u_n}{\\|\\vec u_n\\|^2}', 'f_n = \\frac{\\langle f, \\phi_n\\rangle}{\\|\\phi_n\\|^2}', 385],
+    ['\\vec f\\cdot\\vec g = \\sum_{n=1}^{N} f_n\\,g_n', '\\langle f, g\\rangle = \\int_0^1 f(x)\\,g(x)\\,\\mathrm dx', 510],
+  ].map(([a, b, y]) => ({
+    a: new Tex(g, '\\displaystyle ' + a, { size: 38, x: 520, y, anchor: 'middle' }),
+    fl: new Arrow(g, 850, y - 12, 1070, y - 12, { color: 'dim', width: 3, head: 18 }),
+    b: new Tex(g, '\\displaystyle ' + b, { size: 38, x: 1400, y, anchor: 'middle' }),
+  }));
+
+  const PARES = {
+    A: { pill: '$f = (1-x)^2,\\ \\ g = x$', f: x => (1 - x) ** 2, g: x => x, yr: [-.05, .2] },
+    B: { pill: '$f = g = (1-x)^2$', f: x => (1 - x) ** 2, g: x => (1 - x) ** 2, yr: [-.18, 1.12] },
+    C: { pill: '$f = \\cos 2\\pi x,\\ \\ g = \\sen 2\\pi x$', f: x => Math.cos(2 * PI * x), g: x => Math.sin(2 * PI * x), yr: [-.62, .62] },
+  };
+  const xs01 = linspace(0, 1, 400);
+  for (const Pp of Object.values(PARES)) {
+    const gP = E('g', {}, g);
+    Pp.grupo = gP; Pp.ax = new Axes(gP, { x0: 200, x1: 1120, y0: 620, y1: 865, xr: [0, 1.04], yr: Pp.yr, base: 0, xlabel: 'x', xticks: [[1, '1']] });
+    Pp.I = integral(x => Pp.f(x) * Pp.g(x), 0, 1, 20000);
+  }
+  let par = 'A';
+  const barras = E('path', {}, g); Object.assign(barras.style, { fill: C('k'), fillOpacity: .3, stroke: C('k') });
+  const curva = new Curve(g, null, { color: 'x', width: 4 });
+  const lfg = new Tex(g, 'f(x)\\,g(x)', { size: 34, x: 218, y: 612, color: 'x' });
+  const pas = new Pastillas(g, 1250, 640, Object.entries(PARES).map(([k, Pp]) => [k, Pp.pill]), k => { par = k; redibujar(); }, { vertical: true, size: 26 });
+  const rS = new Lectura(g, '\\textstyle\\sum f_n\\,g_n =', { size: 36, x: 1250, y: 840 });
+  const rSdx = new Lectura(g, '\\textstyle\\sum f_n\\,g_n\\,\\Delta x =', { size: 36, x: 1250, y: 910, colorNum: 'k' });
+  const rI = new Lectura(g, '\\textstyle\\int_0^1 f\\,g\\,\\mathrm dx =', { size: 36, x: 1250, y: 980, colorNum: 'x' });
+  const NS = [2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 30, 50, 100, 200];
+  const sl = new Deslizador(g, 220, 700, 955, NS, () => redibujar(), { inicial: 6, rotulo: 'cantidad de puntos', texto: N => `$N = ${N},\\ \\ \\Delta x = 1/N$` });
+  const T2 = 4.4;
+  const ley = leyendas(g, [['sin el $\\Delta x = 1/N$ la suma crece con $N$: con él, tiende a la integral', T2 + 2.4]], { size: 36, y: 1045 });
+
+  let tUlt = 0;
+  const yo = {
+    steps: [2.2, 2.2, 2.4, 1.6],
+    render(t) {
+      tUlt = t;
+      titulo.write(P(t, 0, .9)); hL.write(P(t, .2, .8)); hR.write(P(t, .2, .8)); nInf.write(P(t, .4, .8));
+      filas.forEach((fi, i) => { const p = P(t, i * 2.2 + .3, 1.2); fi.a.write(p); fi.fl.grow(P(t, i * 2.2 + .9, .7)); fi.b.write(P(t, i * 2.2 + 1.2, 1)); });
+      const pP = P(t, T2, 1.2), Pp = PARES[par], ax = Pp.ax, N = sl.v, dx = 1 / N;
+      for (const [k, Q] of Object.entries(PARES)) Q.grupo.style.display = k === par ? '' : 'none';
+      ax.create(pP); lfg.write(pP);
+      let d = '', s = 0;
+      for (let n = 1; n <= N; n++) {
+        const x = n / N, v = Pp.f(x) * Pp.g(x); s += v;
+        d += `M${ax.X(x - dx).toFixed(1)},${ax.yb.toFixed(1)}V${ax.Y(v).toFixed(1)}H${ax.X(x).toFixed(1)}V${ax.yb.toFixed(1)}Z`;
+      }
+      barras.setAttribute('d', d); barras.style.strokeWidth = N <= 50 ? 1.5 : 0; barras.style.opacity = P(t, T2 + .6, .8);
+      curva.set(xs01.map(x => [ax.X(x), ax.Y(Pp.f(x) * Pp.g(x))])).create(P(t, T2 + .3, 1));
+      pas.alpha(P(t, T2 + 1, .6)); sl.alpha(P(t, T2 + 1, .6));
+      rS.set(s, 3).write(P(t, T2 + 1, .8)); rSdx.set(s * dx, 4).write(P(t, T2 + 1.2, .8)); rI.set(Pp.I, 4).write(P(t, T2 + 1.4, .8));
+      ley(t);
+    },
+  };
+  const redibujar = () => yo.render(tUlt);
+  return yo;
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   5  La base de Fourier es ortogonal: la matriz de productos internos es diagonal.
+      Click en una casilla = ver ese par de funciones, su producto y el área con signo.
+   ════════════════════════════════════════════════════════════════════════════ */
+slide('base', g => {
+  const titulo = new Txt(g, 'La base de Fourier', { size: 54, x: 70, y: 80 });
+  const sub = new Tex(g, '\\{1,\\ \\cos(nx),\\ \\sen(nx)\\}_{n \\ge 1}\\ \\ \\text{en } [-\\pi, \\pi]', { size: 40, x: 70 + titulo.width + 50, y: 80, color: 'h' });
+  const ELEM = [['c', 0], ...[1, 2, 3, 4, 5].map(n => ['c', n]), ...[1, 2, 3, 4, 5].map(n => ['s', n])];
+  const fe = ([tp, n]) => tp === 'c' ? x => Math.cos(n * x) : x => Math.sin(n * x);
+  const texE = ([tp, n]) => n === 0 ? '1' : `\\${tp === 'c' ? 'cos' : 'sen'} ${n > 1 ? n : ''}x`;
+  const IP = ELEM.map(a => ELEM.map(b => integral(x => fe(a)(x) * fe(b)(x))));
+  const simb = v => Math.abs(v) < 1e-6 ? '0' : Math.abs(v - PI) < 1e-6 ? '\\pi' : Math.abs(v - 2 * PI) < 1e-6 ? '2\\pi' : num(v);
+  let I = 1, J = 2;
+
+  const ax1 = new Axes(g, ejePi(170, 1060, 210, 460, [-1.3, 1.3]));
+  const c1 = new Curve(g, null, { color: 'h', width: 4.5 }), c2 = new Curve(g, null, { color: 'k', width: 4.5 });
+  const l1 = new TexVar(g, { size: 38, color: 'h', x: 190, y: 205 }), l2 = new TexVar(g, { size: 38, color: 'k', y: 205 });
+  const ax2 = new Axes(g, ejePi(170, 1060, 600, 850, [-1.3, 1.3]));
+  const area = new Area(g), cP = new Curve(g, null, { color: 'fg', width: 3.5 });
+  const lP = new TexVar(g, { size: 36, x: 190, y: 595 });
+  const rI = new TexVar(g, { size: 42, x: 615, y: 975, anchor: 'middle' });
+
+  // la matriz de productos internos ⟨φ_i, φ_j⟩: la grilla está desde el principio, los valores se llenan al final
+  const M0 = [1300, 260], CEL = 48, gM = E('g', {}, g), gV = E('g', {}, g), gC = E('g', {}, g);
+  const lado = ELEM.length * CEL, enCelda = (i, j) => [M0[0] + (j + .5) * CEL, M0[1] + (i + .5) * CEL + 7];
+  const valor = v => Math.abs(v) < 1e-6 ? '0' : Math.abs(v - PI) < 1e-6 ? 'π' : '2π';
+  const relleno = (r, v) => Object.assign(r.style, { fill: Math.abs(v) > 1e-6 ? C('h') : 'transparent', fillOpacity: Math.abs(v - 2 * PI) < 1e-6 ? .75 : .45 });
+  ELEM.forEach((a, i) => {
+    new Tex(gM, texE(a), { size: 24, x: M0[0] - 12, y: M0[1] + (i + .5) * CEL + 8, anchor: 'end', color: 'dim' });
+    const gr = E('g', { transform: `translate(${M0[0] + (i + .5) * CEL + 8},${M0[1] - 12}) rotate(-90)` }, gM);
+    new Tex(gr, texE(a), { size: 24, color: 'dim' });
+    ELEM.forEach((b, j) => {
+      const v = IP[i][j];
+      relleno(E('rect', { x: M0[0] + j * CEL, y: M0[1] + i * CEL, width: CEL, height: CEL }, gV), v);
+      new Txt(gV, valor(v), { size: 20, x: enCelda(i, j)[0], y: enCelda(i, j)[1], anchor: 'middle', color: Math.abs(v) < 1e-6 ? 'tenue' : 'fg' });
+      const r = E('rect', { x: M0[0] + j * CEL, y: M0[1] + i * CEL, width: CEL, height: CEL, fill: 'transparent' }, gC);
+      Object.assign(r.style, { stroke: C('tenue'), strokeWidth: 1 });
+      clickeable(r, () => { I = i; J = j; redibujar(); });
+    });
+  });
+  // la casilla elegida: su valor aparece apenas se calcula la integral
+  const selF = E('rect', { width: CEL, height: CEL, 'pointer-events': 'none' }, gC);
+  const selT = new Txt(gC, '', { size: 20, anchor: 'middle' }); selT.g.style.pointerEvents = 'none';
+  const sel = E('rect', { width: CEL, height: CEL, fill: 'none', 'pointer-events': 'none' }, gC);
+  Object.assign(sel.style, { stroke: C('k'), strokeWidth: 4.5 });
+  const normas = new Tex(g, '\\|1\\|^2 = 2\\pi, \\qquad \\|\\cos nx\\|^2 = \\|\\sen nx\\|^2 = \\pi', { size: 32, x: M0[0] + lado / 2, y: M0[1] + lado + 75, anchor: 'middle' });
+  const pis = pista(g, 'tocá una casilla para ver ese par', M0[0] + lado / 2, M0[1] + lado + 125);
+  const T2 = 4.2;
+  const ley = leyendas(g, [['la matriz de productos internos es diagonal: la base es ortogonal', T2 + 1.6]], { size: 38, y: 1045 });
+
+  let tUlt = 0;
+  const yo = {
+    steps: [2.2, 2, 2.8],
+    render(t) {
+      tUlt = t;
+      const p0 = P(t, 0, 1), pC = P(t, .4, 1.2), pP = P(t, 2.2, 1.2), pM = P(t, T2, 1.2);
+      titulo.write(P(t, 0, .9)); sub.write(P(t, .4, 1));
+      const a = ELEM[I], b = ELEM[J], fa = fe(a), fb = fe(b);
+      ax1.create(p0);
+      c1.set(XS.map(x => [ax1.X(x), ax1.Y(fa(x))])).create(pC); c2.set(XS.map(x => [ax1.X(x), ax1.Y(fb(x))])).create(pC);
+      l1.set(texE(a)).write(pC); l2.set(texE(b)).at(190 + l1.w + 40, 205).write(pC);
+      ax2.create(pP);
+      const prod = XS.map(x => fa(x) * fb(x));
+      cP.set(XS.map((x, i) => [ax2.X(x), ax2.Y(prod[i])])).create(pP);
+      area.set(ax2, XS, prod).alpha(P(t, 2.8, .8));
+      lP.set(`${texE(a)}\\,\\cdot\\,${texE(b)}`).write(pP);
+      rI.set(`\\int_{-\\pi}^{\\pi} ${texE(a)}\\,\\cdot\\,${texE(b)}\\ \\mathrm dx = ${simb(IP[I][J])}`).write(P(t, 3, .9));
+      const pG = P(t, .6, 1), pV = P(t, 3, .8);
+      gM.style.opacity = gC.style.opacity = pG; gM.style.visibility = gC.style.visibility = pG > 0 ? 'visible' : 'hidden';
+      gV.style.opacity = pM; gV.style.visibility = pM > 0 ? 'visible' : 'hidden';
+      for (const r of [sel, selF]) { r.setAttribute('x', M0[0] + J * CEL); r.setAttribute('y', M0[1] + I * CEL); }
+      relleno(selF, IP[I][J]); selF.style.opacity = pV * (1 - pM);
+      selT.t.textContent = valor(IP[I][J]); selT.at(...enCelda(I, J)).alpha(pV * (1 - pM));
+      normas.write(P(t, T2 + .8, 1)); pis.write(P(t, T2 + 1.2, .8)); ley(t);
+    },
+  };
+  const redibujar = () => yo.render(tUlt);
+  return yo;
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   6  Los coeficientes son proyecciones: a_n = ⟨f, cos nx⟩ / ‖cos nx‖², como c = f·u / ‖u‖².
+      Se elige f (pastillas) y el coeficiente (click en una barra del espectro).
+   ════════════════════════════════════════════════════════════════════════════ */
+slide('coeficientes', g => {
+  const titulo = new Txt(g, 'Los coeficientes son proyecciones', { size: 54, x: 70, y: 80 });
+  let fk = 'f', tipo = 'a', n = 1;
+  const pas = new Pastillas(g, 1850, 70, Object.entries(FUN).map(([k, F]) => [k, F.pill]), k => {
+    fk = k; if (Math.abs(FUN[k][tipo][n]) < 1e-9) { tipo = FUN[k].par ? 'a' : 'b'; n = 1; }
+    redibujar();
+  }, { anchor: 'end', size: 26 });
+  // izquierda: f con el elemento de la base, y su producto (f se dibuja escalada para que entre)
+  const ax1 = new Axes(g, ejePi(170, 1000, 220, 470, [-1.3, 1.3]));
+  const cF = new Curve(g, null, { color: 'x', width: 4 }), cB = new Curve(g, null, { color: 'h', width: 4 });
+  const lF = new TexVar(g, { size: 38, color: 'x', x: 190, y: 215 }), lB = new TexVar(g, { size: 38, color: 'h', y: 215 });
+  const ax2 = new Axes(g, ejePi(170, 1000, 610, 860, [-1.3, 1.3]));
+  const area = new Area(g), cP = new Curve(g, null, { color: 'fg', width: 3.5 });
+  const rC = new Lectura(g, '', { size: 38, x: 170, y: 975, colorNum: 'k' });
+
+  // derecha: la fórmula y el espectro (dos filas: a_n y b_n)
+  const recuerdo = new Tex(g, '\\text{en } \\mathbb R^2\\!:\\ \\ c = \\frac{\\vec f\\cdot\\vec u}{\\|\\vec u\\|^2}', { size: 32, x: 1130, y: 215, color: 'dim' });
+  const fA = new Tex(g, 'a_n = \\dfrac{\\langle f, \\cos nx\\rangle}{\\|\\cos nx\\|^2}', { size: 36, x: 1130, y: 330 });
+  const fB = new Tex(g, 'b_n = \\dfrac{\\langle f, \\sen nx\\rangle}{\\|\\sen nx\\|^2}', { size: 36, x: 1500, y: 330 });
+  const NV = 12, SX0 = 1200, SDX = 50, BASE = { a: 560, b: 800 }, ALTO = 100;
+  const gE = E('g', {}, g);
+  const filas = {};
+  for (const tp of ['a', 'b']) {
+    new Curve(gE, [[SX0 - 25, BASE[tp]], [SX0 + NV * SDX + 25, BASE[tp]]], { color: 'ax', width: 2.5 });
+    new Tex(gE, `${tp}_n`, { size: 36, x: SX0 - 45, y: BASE[tp] + 12, anchor: 'end', color: 'k' });
+    filas[tp] = new Stems(gE, BASE[tp], { color: 'k', r: 7, width: 4 });
+    for (let m = tp === 'a' ? 0 : 1; m <= NV; m++) {
+      const z = E('rect', { x: SX0 + m * SDX - SDX / 2, y: BASE[tp] - ALTO - 15, width: SDX, height: 2 * ALTO + 30, fill: 'transparent' }, gE);
+      clickeable(z, () => { tipo = tp; n = m; redibujar(); });
+    }
+  }
+  for (let m = 0; m <= NV; m++) new Tex(gE, String(m), { size: 24, x: SX0 + m * SDX, y: BASE.b + ALTO + 50, anchor: 'middle', color: 'dim' });
+  new Tex(gE, 'n', { size: 30, x: SX0 + NV * SDX + 50, y: BASE.b + ALTO + 50, anchor: 'middle', color: 'ax' });
+  const elegido = new Stems(gE, BASE.a, { color: 'h', r: 9, width: 6 });
+  const pis = pista(g, 'tocá una barra para ver de dónde sale', SX0 + NV * SDX / 2, 1000);
+  const T2 = 4.4;
+
+  let tUlt = 0;
+  const yo = {
+    steps: [2.2, 2.2, 2.6],
+    render(t) {
+      tUlt = t;
+      const F = FUN[fk], esc = 1 / F.max, base = tipo === 'a' ? (x => Math.cos(n * x)) : (x => Math.sin(n * x));
+      const texB = n === 0 ? '1' : `\\${tipo === 'a' ? 'cos' : 'sen'} ${n > 1 ? n : ''}x`;
+      const p0 = P(t, 0, 1), pC = P(t, .4, 1.2), pP = P(t, 2.2, 1.2), pE = P(t, T2, 1.2);
+      titulo.write(P(t, 0, .9)); pas.alpha(pE);
+      ax1.create(p0);
+      cF.set(XS.map((x, i) => [ax1.X(x), ax1.Y(F.ys[i] * esc)])).create(pC);
+      cB.set(XS.map(x => [ax1.X(x), ax1.Y(base(x))])).create(pC);
+      lF.set(`${F.tex === 'x' ? 'x' : F.tex + '(x)'}`).write(pC); lB.set(texB).at(190 + lF.w + 40, 215).write(pC);
+      ax2.create(pP);
+      const prod = XS.map((x, i) => F.ys[i] * esc * base(x));
+      cP.set(XS.map((x, i) => [ax2.X(x), ax2.Y(prod[i])])).create(pP); area.set(ax2, XS, prod).alpha(P(t, 2.8, .8));
+      const den = n === 0 ? '2\\pi' : '\\pi', ft = F.tex === 'x' ? 'x' : F.tex + '(x)';
+      rC.formula(`${tipo}_{${n}} = \\frac{1}{${den}}\\int_{-\\pi}^{\\pi} ${ft}\\,${texB}\\ \\mathrm dx =`).set(F[tipo][n], 3).write(P(t, 3, .9));
+      // espectro, con el coeficiente elegido marcado
+      recuerdo.write(P(t, .6, 1)); fA.write(P(t, .9, 1)); fB.write(P(t, 1.1, 1));
+      gE.style.opacity = P(t, 1, .8); gE.style.visibility = t > 1 ? 'visible' : 'hidden';
+      const M = Math.max(...['a', 'b'].flatMap(tp => F[tp].slice(0, NV + 1).map(Math.abs)));
+      for (const tp of ['a', 'b']) filas[tp].set(F[tp].slice(0, NV + 1).map((v, m) => [SX0 + m * SDX, BASE[tp] - ALTO * v / M]), pE);
+      elegido.base = BASE[tipo]; elegido.set([[SX0 + n * SDX, BASE[tipo] - ALTO * F[tipo][n] / M]], P(t, 3, .8), BASE[tipo]);
+      pis.write(P(t, T2 + 1.4, .8));
+    },
+  };
+  const redibujar = () => yo.render(tUlt);
+  return yo;
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   7  Sumar es reconstruir: S_N = la proyección de f sobre los primeros términos de la base.
+      Slider de N y click en las barras para apagar o prender términos.
+   ════════════════════════════════════════════════════════════════════════════ */
+slide('reconstruir', g => {
+  const titulo = new Txt(g, 'Sumar es reconstruir', { size: 54, x: 70, y: 80 });
+  let fk = 'f';
+  const apagados = new Set();
+  const pas = new Pastillas(g, 1850, 70, Object.entries(FUN).map(([k, F]) => [k, F.pill]), k => { fk = k; apagados.clear(); redibujar(); }, { anchor: 'end', size: 26 });
+  const formula = new Tex(g, 'S_N(x) = a_0 + \\sum_{n=1}^{N} a_n\\cos(nx) + b_n\\sen(nx)', { size: 38, x: 170, y: 190 });
+  const AX = {};
+  for (const [k, F] of Object.entries(FUN)) { const gA = E('g', {}, g); AX[k] = { g: gA, ax: new Axes(gA, ejePi(170, 1290, 260, 640, F.yr)) }; }
+  const cF = new Curve(g, null, { color: 'x', width: 3.5 }), cS = new Curve(g, null, { color: 'k', width: 4.5 });
+  const lF = new TexVar(g, { size: 36, color: 'x' }), lS = new Tex(g, 'S_N', { size: 36, color: 'k' });
+  // espectro: una fila (las f de los ejemplos son pares o impares, así que en cada n hay un solo coeficiente)
+  const SX0 = 200, SDX = 26.5, BASE = 860, ALTO = 95;
+  const gE = E('g', {}, g);
+  new Curve(gE, [[SX0 - 18, BASE], [SX0 + NMAX * SDX + 18, BASE]], { color: 'ax', width: 2.5 });
+  const lFila = new TexVar(gE, { size: 34, color: 'k', x: SX0 - 34, y: BASE + 12, anchor: 'end' });
+  const prendidos = new Stems(gE, BASE, { color: 'k', r: 5, width: 4 }), fuera = new Stems(gE, BASE, { color: 'tenue', r: 5, width: 4 });
+  for (let m = 0; m <= NMAX; m++) {
+    const z = E('rect', { x: SX0 + m * SDX - SDX / 2, y: BASE - ALTO - 20, width: SDX, height: 2 * ALTO + 40, fill: 'transparent' }, gE);
+    clickeable(z, () => { apagados.has(m) ? apagados.delete(m) : apagados.add(m); redibujar(); });
+  }
+  for (const m of [0, 10, 20, 30, 40]) new Tex(gE, String(m), { size: 24, x: SX0 + m * SDX, y: BASE + ALTO + 42, anchor: 'middle', color: 'dim' });
+  const sl = new Deslizador(g, 1400, 1760, 330, Array.from({ length: NMAX + 1 }, (_, i) => i), () => redibujar(), { inicial: 3, rotulo: 'términos', texto: N => `$N = ${N}$` });
+  const rE = new Lectura(g, '\\dfrac{\\|f - S_N\\|^2}{\\|f\\|^2} =', { size: 36, x: 1400, y: 480, colorNum: 'k' });
+  const nota = ['$S_N$ es la proyección de $f$', 'sobre $1, \\cos x, \\sen x, \\dots, \\sen Nx$:', 'la mejor aproximación', 'con esos términos']
+    .map((s, i) => new Mix(g, s, { size: 30, x: 1400, y: 620 + i * 48, italic: true, color: 'dim' }));
+  const pis = pista(g, 'tocá una barra para apagar o prender ese término', SX0 + NMAX * SDX / 2, 1035);
+  const T1 = 2.2, T2 = 4.4;
+
+  let tUlt = 0;
+  const yo = {
+    steps: [T1, T2 - T1, 2.2],
+    render(t) {
+      tUlt = t;
+      const F = FUN[fk], ax = AX[fk].ax, N = sl.v, usar = m => m <= N && !apagados.has(m);
+      for (const [k, A] of Object.entries(AX)) A.g.style.display = k === fk ? '' : 'none';
+      const p0 = P(t, 0, 1), pC = P(t, .4, 1.2), pE = P(t, T1, 1.2), pN = P(t, T2, 1.2);
+      titulo.write(P(t, 0, .9)); formula.write(P(t, .3, 1.2)); pas.alpha(P(t, T1, .6));
+      ax.create(p0);
+      cF.set(XS.map((x, i) => [ax.X(x), ax.Y(F.ys[i])])).create(pC); cF.alpha(pC > 0 ? .55 : 0);
+      const S = suma(F, usar);
+      cS.set(XS.map((x, i) => [ax.X(x), ax.Y(S[i])])).create(P(t, .9, 1.2));
+      lF.set(F.tex === 'x' ? 'x' : F.tex + '(x)').at(ax.X(-PI) + 10, ax.Y(F.yr[1]) + 8).write(pC);
+      lS.at(ax.X(-PI) + 20 + lF.w + 30, ax.Y(F.yr[1]) + 8).write(P(t, .9, 1));
+      // espectro
+      const c = F.par ? F.a : F.a.map((v, m) => m === 0 ? v : F.b[m]), M = Math.max(...c.map(Math.abs));
+      const tops = c.map((v, m) => [SX0 + m * SDX, BASE - ALTO * v / M]);
+      prendidos.set(tops.map((p, m) => usar(m) ? p : [p[0], BASE]), 1); fuera.set(tops.map((p, m) => usar(m) ? [p[0], BASE] : p), 1);
+      lFila.set(F.par ? 'a_n' : 'b_n');
+      gE.style.opacity = pE; gE.style.visibility = pE > 0 ? 'visible' : 'hidden';
+      sl.alpha(P(t, .6, .6)); pis.write(P(t, T1 + 1, .8));
+      // error relativo (sobre la grilla)
+      let e = 0, n2 = 0; F.ys.forEach((y, i) => { e += (y - S[i]) ** 2; n2 += y * y; });
+      rE.set(`${num(100 * e / n2, 1)} %`).write(P(t, T1 + .6, 1));
+      nota.forEach((m, i) => m.write(P(t, T2 + .5 + .25 * i, .9)));
+    },
+  };
+  const redibujar = () => yo.render(tUlt);
+  return yo;
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   8  ¿Por qué esta base? Porque es cómoda para un operador: autovectores de una matriz en ℝ²,
+      autofunciones de d²/dx² en funciones.
+   ════════════════════════════════════════════════════════════════════════════ */
+slide('por-que', g => {
+  const titulo = new Txt(g, '¿Por qué esta base?', { size: 54, x: 70, y: 80 });
+  const sub = new Mix(g, 'por el motivo de siempre: es cómoda para algún operador', { size: 36, x: 70 + titulo.width + 50, y: 80, italic: true, color: 'dim' });
+  const div = new DLine(g, 960, 180, 960, 930);
+  const hL = new Mix(g, 'en $\\mathbb R^2$: una matriz', { size: 40, x: 480, y: 210, anchor: 'middle' });
+  const hR = new Mix(g, 'en funciones: la derivada segunda', { size: 40, x: 1440, y: 210, anchor: 'middle' });
+
+  // izquierda: v (unitario, se arrastra) y A v
+  const O = [520, 640], S = 110, W = ([x, y]) => [O[0] + S * x, O[1] - S * y];
+  const ax = new Axes(g, { x0: 190, x1: 830, y0: 360, y1: 915, xr: [-3, 2.818], yr: [-2.5, 2.545], ejeY: 0, base: 0 });
+  const tA = new Tex(g, 'A = \\begin{pmatrix} 2 & 1 \\\\ 1 & 2 \\end{pmatrix}', { size: 34, x: 120, y: 310 });
+  const circ = E('circle', { cx: O[0], cy: O[1], r: S, fill: 'none' }, g); Object.assign(circ.style, { stroke: C('tenue'), strokeWidth: 2, strokeDasharray: '4 8' });
+  const autos = [[1, 1], [1, -1]].map(d => new Curve(g, [W([-2.3 * d[0], -2.3 * d[1]]), W([2.3 * d[0], 2.3 * d[1]])], { color: 'h', width: 2, dash: '4 9' }));
+  const aAv = new Arrow(g, 0, 0, 1, 1, { color: 'k', width: 5, head: 24 }), aV = new Arrow(g, 0, 0, 1, 1, { color: 'x', width: 5, head: 24 });
+  const lV = new Tex(g, '\\vec v', { size: 40, color: 'x' }), lAv = new Tex(g, 'A\\vec v', { size: 40, color: 'k' });
+  let v = [Math.cos(1.95), Math.sin(1.95)];
+  const mV = new Manija(g, 'x', q => {
+    let w = [(q.x - O[0]) / S, (O[1] - q.y) / S]; const L = Math.hypot(...w); if (L < .05) return;
+    w = w.map(c => c / L);
+    for (const d of [[1, 1], [1, -1], [-1, -1], [-1, 1]]) { const e = d.map(c => c / Math.SQRT2); if (dot(w, e) > Math.cos(4 * PI / 180)) w = e; }   // imán en los autovectores
+    v = w; redibujar();
+  });
+  const rAng = new TexVar(g, { mix: true, size: 36, x: 190, y: 985 }), rAuto = new TexVar(g, { mix: true, size: 36, x: 190, y: 985, color: 'h' });
+
+  // derecha: una función g y su derivada segunda (cada una en su escala)
+  const FS = {
+    c1: { pill: '$\\cos x$', tex: '\\cos x', g: x => Math.cos(x), g2: x => -Math.cos(x), auto: -1 },
+    c2: { pill: '$\\cos 2x$', tex: '\\cos 2x', g: x => Math.cos(2 * x), g2: x => -4 * Math.cos(2 * x), auto: -4 },
+    s3: { pill: '$\\sen 3x$', tex: '\\sen 3x', g: x => Math.sin(3 * x), g2: x => -9 * Math.sin(3 * x), auto: -9 },
+    gau: { pill: '$e^{-x^2}$', tex: 'e^{-x^2}', g: x => Math.exp(-x * x), g2: x => (4 * x * x - 2) * Math.exp(-x * x), auto: null },
+  };
+  let gk = 'c2';
+  const pas = new Pastillas(g, 1440, 290, Object.entries(FS).map(([k, Q]) => [k, Q.pill]), k => { gk = k; redibujar(); }, { anchor: 'middle', size: 28, valor: gk });
+  const ax1 = new Axes(g, ejePi(1080, 1800, 380, 590, [-1.25, 1.25], { xlabel: null }));
+  const ax2 = new Axes(g, ejePi(1080, 1800, 690, 900, [-1.25, 1.25]));
+  const cG = new Curve(g, null, { color: 'x', width: 4.5 }), cG2 = new Curve(g, null, { color: 'k', width: 4.5 });
+  const lG = new TexVar(g, { size: 36, color: 'x', x: 1098, y: 378 }), lG2 = new TexVar(g, { size: 36, color: 'k', x: 1098, y: 688 });
+  const rGsi = new TexVar(g, { mix: true, size: 38, x: 1440, y: 985, anchor: 'middle', color: 'h' }), rGno = new TexVar(g, { mix: true, size: 38, x: 1440, y: 985, anchor: 'middle', color: 'ruido' });
+  const T1 = 2.2, T2 = 4.4;
+  const ley = leyendas(g, [['en la base de Fourier, $\\frac{\\mathrm d^2}{\\mathrm dx^2}$ es diagonal: a cada término lo multiplica por $-n^2$', T2 + .2]], { size: 36, y: 1048 });
+
+  let tUlt = 0;
+  const yo = {
+    steps: [T1, T2 - T1, 1.8],
+    render(t) {
+      tUlt = t;
+      const p0 = P(t, 0, 1), pL = P(t, .4, 1.2), pR = P(t, T1, 1.2), pA = P(t, T2, 1);
+      titulo.write(P(t, 0, .9)); sub.write(P(t, .3, 1)); div.grow(p0); hL.write(pL); hR.write(pR);
+      ax.create(pL); tA.write(pL); circ.style.opacity = pL;
+      const Av = [2 * v[0] + v[1], v[0] + 2 * v[1]], Vp = W(v), Avp = W(Av);
+      poner(aV, O, Vp, pL); poner(aAv, O, Avp, P(t, .9, 1));
+      lV.at(Vp[0] + 12, Vp[1] - 14).write(pL); lAv.at(Avp[0] + 12, Avp[1] - 14).write(P(t, .9, 1));
+      mV.at(...Vp).alpha(pL >= 1 ? 1 : 0);
+      const ang = Math.acos(clamp(dot(v, Av) / Math.hypot(...Av), -1, 1)) * 180 / PI, alin = ang < .5;
+      rAng.set(`ángulo entre $\\vec v$ y $A\\vec v$:  ${num(ang, 0)}°`).write(alin ? 0 : P(t, 1.2, .8));
+      rAuto.set(`autovector:  $A\\vec v = ${num(Math.hypot(...Av), 0)}\\,\\vec v$`).write(alin ? P(t, 1.2, .8) : 0);
+      autos.forEach(a => a.create(pA));
+      // derecha
+      const Q = FS[gk], m2 = Math.max(...XS.map(x => Math.abs(Q.g2(x))));
+      ax1.create(pR); ax2.create(pR); pas.alpha(pR);
+      cG.set(XS.map(x => [ax1.X(x), ax1.Y(Q.g(x))])).create(P(t, T1 + .3, 1));
+      cG2.set(XS.map(x => [ax2.X(x), ax2.Y(Q.g2(x) / m2)])).create(P(t, T1 + .7, 1));
+      lG.set(`g(x) = ${Q.tex}`).write(P(t, T1 + .3, 1)); lG2.set(`g''(x)\\ \\ (\\text{escala } \\times\\tfrac{1}{${num(m2, m2 < 10 ? 1 : 0)}})`).write(P(t, T1 + .7, 1));
+      rGsi.set(`$g'' = ${Q.auto}\\,g$: autofunción`).write(Q.auto ? P(t, T1 + 1.1, .9) : 0);
+      rGno.set(`$g''$ no es un múltiplo de $g$`).write(Q.auto ? 0 : P(t, T1 + 1.1, .9));
+      ley(t);
+    },
+  };
+  const redibujar = () => yo.render(tUlt);
+  return yo;
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+   9  El 1.c por el camino fácil: f₂' = −½ + f, así que la serie de f₂ sale de integrar la de f
+      término a término. Se arrastra x (f₂(x) = área de f − ½ entre 0 y x) y se elige cuántos términos.
+   ════════════════════════════════════════════════════════════════════════════ */
+slide('ej1c', g => {
+  const titulo = new Txt(g, '1.c  ·  ¿Y si nos ahorramos las cuentas?', { size: 54, x: 70, y: 80 });
+  const F = FUN.f, F2 = FUN.f2;
+  const axT = new Axes(g, ejePi(170, 1010, 200, 450, [-.45, 1.4], { xlabel: null }));
+  const axB = new Axes(g, ejePi(170, 1010, 590, 860, [-1.05, 1.05]));
+  const medio = new Curve(g, [[axT.X(-PI), axT.Y(.5)], [axT.X(PI), axT.Y(.5)]], { color: 'dim', width: 2.5, dash: '8 9' });
+  const lMedio = new Tex(g, '\\tfrac12', { size: 30, x: axT.X(PI) + 14, y: axT.Y(.5) + 10, color: 'dim' });
+  const area = new Area(g);
+  const cF = new Curve(g, XS.map((x, i) => [axT.X(x), axT.Y(F.ys[i])]), { color: 'x', width: 4 });
+  const cSF = new Curve(g, null, { color: 'k', width: 4 });
+  const cF2 = new Curve(g, XS.map((x, i) => [axB.X(x), axB.Y(F2.ys[i])]), { color: 'x', width: 4 });
+  const cSF2 = new Curve(g, null, { color: 'k', width: 4 });
+  const lT = new Tex(g, 'f(x)', { size: 36, color: 'x', x: 190, y: 200 }), lB = new Tex(g, 'f_2(x)', { size: 36, color: 'x', x: 190, y: 590 });
+  const lST = new Tex(g, 'S_M[f]', { size: 32, color: 'k', x: 300, y: 200 }), lSB = new Tex(g, 'S_M[f_2]', { size: 32, color: 'k', x: 330, y: 590 });
+  // el cursor: f₂(x) es el área (con signo) de f − ½ entre 0 y x
+  let xc = 2.3;
+  const guia = new Curve(g, null, { color: 'h', width: 2.5, dash: '6 8' });
+  const pto = E('circle', { r: 9 }, g); pto.style.fill = C('h');
+  const mX = new Manija(g, 'h', q => { xc = clamp((q.x - axB.x0) / (axB.x1 - axB.x0) * 2 * PI - PI, -PI, PI); redibujar(); });
+  const rX = new Lectura(g, 'f_2(x) = \\textstyle\\int_0^x \\big(f - \\tfrac12\\big)\\,\\mathrm dt =', { size: 32, x: 830, y: 968, colorNum: 'h' });
+
+  // derecha: las cuentas
+  const X0 = 1110, sz = 32;
+  const de = new Mix(g, 'del inciso (a):', { size: 26, x: X0, y: 175, italic: true, color: 'dim' });
+  const r0 = new Tex(g, 'f(x) = \\tfrac12 + \\sum_{m\\ge1} \\frac{2(-1)^m}{(2m-1)\\pi}\\,\\cos((2m-1)x)', { size: sz, x: X0, y: 240 });
+  const r1 = new Tex(g, 'f_2(x) = -\\frac{x}{2} + \\int_0^x f(t)\\,\\mathrm dt', { size: sz, x: X0, y: 340 });
+  const r2 = new Tex(g, '\\Rightarrow\\ \\ f_2\'(x) = -\\tfrac12 + f(x)', { size: sz, x: X0, y: 420 });
+  const r3 = new Tex(g, 'f_2\'(x) = \\sum_{m\\ge1} \\frac{2(-1)^m}{(2m-1)\\pi}\\,\\cos((2m-1)x)', { size: sz, x: X0, y: 530 });
+  const r3n = new Mix(g, '(el $\\tfrac12$ se cancela)', { size: 24, x: X0 + 700, y: 572, italic: true, color: 'dim', anchor: 'end' });
+  const r4 = new Tex(g, '\\Rightarrow\\ \\ f_2(x) = \\int_0^x f_2\'(t)\\,\\mathrm dt', { size: sz, x: X0, y: 650 });
+  const r5 = new Tex(g, '= \\sum_{m\\ge1} \\frac{2(-1)^m}{(2m-1)^2\\,\\pi}\\,\\sen((2m-1)x)', { size: sz, x: X0 + 40, y: 750 });
+  const r6 = new Tex(g, '\\boxed{\\ b_{2m-1} = \\frac{2(-1)^m}{(2m-1)^2\\,\\pi}\\ }', { size: 36, x: X0 + 40, y: 870, color: 'k' });
+  const sl = new Deslizador(g, 200, 620, 960, Array.from({ length: 20 }, (_, i) => i + 1), () => redibujar(), { inicial: 2, rotulo: 'términos de cada serie', texto: M => `$M = ${M}$` });
+  const T1 = 2.4, T2 = T1 + 3, T3 = T2 + 2.8;
+  const ley = leyendas(g, [['integrar divide cada coeficiente por $2m-1$: la serie de $f_2$ converge mucho más rápido', T3 + .3]], { size: 36, y: 1045 });
+
+  let tUlt = 0;
+  const yo = {
+    steps: [T1, T2 - T1, T3 - T2, 1.8],
+    render(t) {
+      tUlt = t;
+      const p0 = P(t, 0, 1), pB = P(t, T1, 1.2);
+      titulo.write(P(t, 0, .9));
+      axT.create(p0); cF.create(P(t, .3, 1)); lT.write(P(t, .3, 1));
+      cSF.set(XS.map((x, i) => [axT.X(x), axT.Y(SF[i])])).create(P(t, .9, 1.2)); lST.write(P(t, .9, 1));
+      de.write(P(t, .5, .8)); r0.write(P(t, .6, 1.2));
+      // f₂ y el área
+      r1.write(P(t, T1, 1)); r2.write(P(t, T1 + .7, 1));
+      medio.create(P(t, T1 + 1.2, .8)); lMedio.write(P(t, T1 + 1.2, .8));
+      axB.create(pB); cF2.create(P(t, T1 + .4, 1)); lB.write(P(t, T1 + .4, 1));
+      const xa = [0, ...XS.filter(x => x * (xc - x) > 0), xc].sort((a, b) => a - b);
+      area.set(axT, xa, xa.map(F.h), .5).alpha(P(t, T1 + 1.6, .8));
+      const y2 = F2.h(xc);
+      guia.set([[axT.X(xc), axT.y0], [axB.X(xc), axB.Y(y2)]]).create(P(t, T1 + 1.6, .8));
+      pto.setAttribute('cx', axB.X(xc)); pto.setAttribute('cy', axB.Y(y2)); pto.style.opacity = P(t, T1 + 1.6, .8);
+      mX.at(axB.X(xc), axB.Y(y2)).alpha(t >= T1 + 2.4 ? 1 : 0);
+      rX.set(y2, 3).write(P(t, T1 + 2, .8));
+      // la serie de f₂, integrando término a término
+      r3.write(P(t, T2, 1)); r3n.write(P(t, T2 + .6, .8)); r4.write(P(t, T2 + 1, 1)); r5.write(P(t, T2 + 1.6, 1.1));
+      cSF2.set(XS.map((x, i) => [axB.X(x), axB.Y(SF2[i])])).create(P(t, T2 + 1.8, 1.2)); lSB.write(P(t, T2 + 1.8, 1));
+      sl.alpha(P(t, T2 + 2, .6));
+      r6.write(P(t, T3, 1)); ley(t);
+    },
+  };
+  let SF, SF2;
+  const series = () => { const M = sl.v, usar = n => n === 0 || (n % 2 === 1 && n <= 2 * M - 1); SF = suma(F, usar); SF2 = suma(F2, usar); };
+  series();
+  const redibujar = () => { series(); yo.render(tUlt); };
+  return yo;
+});
+
+Object.assign(TITULOS, {
+  titulo: 'Título', r2: 'En ℝ²', rn: 'En ℝᴺ', producto: 'Del producto interno a la integral', base: 'La base de Fourier',
+  coeficientes: 'Los coeficientes son proyecciones', reconstruir: 'Sumar es reconstruir', 'por-que': '¿Por qué esta base?',
+  ej1c: '1.c: el camino fácil',
+});
+arrancar();
+</script>
+</body>
+</html>
